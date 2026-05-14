@@ -630,6 +630,7 @@ function JuryView({
 }) {
   const validation = validateJuryPoints(user.juryPoints);
   const selectedIds = new Set(Object.values(user.juryPoints).filter(Boolean));
+  const categorySuggestions = useMemo(() => getCategorySuggestions(user), [user]);
   const [celebrate, setCelebrate] = useState(false);
 
   return (
@@ -648,39 +649,57 @@ function JuryView({
       <div className="jury-list">
         {JURY_POINTS.map((point) => {
           const selected = user.juryPoints[point];
+          const suggestion = categorySuggestions.get(point);
 
           return (
             <label key={point} className="jury-row">
               <span className="points-badge">{point}</span>
-              <select
-                value={selected ?? ''}
-                onChange={(event) => {
-                  const nextParticipantId = event.target.value || null;
-                  onUpdateUser((currentUser) => assignJuryPoints(currentUser, point, nextParticipantId));
-                  if (point === 12 && nextParticipantId) {
-                    setCelebrate(true);
-                    window.setTimeout(() => setCelebrate(false), 900);
-                  }
-                }}
-              >
-                <option value="">Select country</option>
-                {participants.map((participant) => {
-                  const isTaken = selectedIds.has(participant.id) && selected !== participant.id;
-                  return (
-                    <option key={participant.id} value={participant.id} disabled={isTaken}>
-                      {participant.country} - {participant.artist}
-                    </option>
-                  );
-                })}
-              </select>
+              <div className="jury-choice">
+                <select
+                  value={selected ?? ''}
+                  onChange={(event) => {
+                    const nextParticipantId = event.target.value || null;
+                    onUpdateUser((currentUser) => assignJuryPoints(currentUser, point, nextParticipantId));
+                    if (point === 12 && nextParticipantId) {
+                      setCelebrate(true);
+                      window.setTimeout(() => setCelebrate(false), 900);
+                    }
+                  }}
+                >
+                  <option value="">Select country</option>
+                  {participants.map((participant) => {
+                    const isTaken = selectedIds.has(participant.id) && selected !== participant.id;
+                    return (
+                      <option key={participant.id} value={participant.id} disabled={isTaken}>
+                        {participant.country} - {participant.artist}
+                      </option>
+                    );
+                  })}
+                </select>
+                {suggestion && (
+                  <span className="category-suggestion">
+                    category hint: {suggestion.participant.country} · {suggestion.average} avg
+                  </span>
+                )}
+              </div>
             </label>
           );
         })}
       </div>
-
-      <FinalTopTen user={user} />
     </section>
   );
+}
+
+function getCategorySuggestions(user: UserSession) {
+  const sorted = participants
+    .map((participant) => ({
+      participant,
+      average: calculateAverageScore(user, participant.id)
+    }))
+    .filter((item): item is { participant: Participant; average: number } => item.average !== null)
+    .sort((a, b) => b.average - a.average || a.participant.country.localeCompare(b.participant.country));
+
+  return new Map(JURY_POINTS.map((point, index) => [point, sorted[index] ?? null]));
 }
 
 function FinalTopTen({ user }: { user: UserSession }) {
@@ -826,6 +845,7 @@ function ScoreboardView({
   const groupRatingScores = getGroupRatingScores(participants, users);
   const favorites = getUserFavorites(participants, users);
   const winner = groupJuryScores[0] ?? null;
+  const [showCategoryInfo, setShowCategoryInfo] = useState(false);
 
   return (
     <section className="screen party-mode">
@@ -873,7 +893,24 @@ function ScoreboardView({
       </section>
 
       <section className="final-card">
-        <h2>Category favorites</h2>
+        <div className="card-title-row">
+          <h2>Category favorites</h2>
+          <button
+            className="info-button"
+            type="button"
+            aria-expanded={showCategoryInfo}
+            aria-label="Explain category favorites"
+            onClick={() => setShowCategoryInfo((current) => !current)}
+          >
+            i
+          </button>
+        </div>
+        {showCategoryInfo && (
+          <p className="info-note">
+            The average is calculated from each user's category scores for that country. The rating count shows how many
+            users have rated that country with categories.
+          </p>
+        )}
         {groupRatingScores.length === 0 && <p className="empty">No category scores synced yet.</p>}
         {groupRatingScores.slice(0, 12).map(({ participant, average, voters }, index) => (
           <div key={participant.id} className="scoreboard-row">
@@ -883,7 +920,7 @@ function ScoreboardView({
               <small>{participant.song}</small>
             </div>
             <strong>{average} avg</strong>
-            <small>{voters}×</small>
+            <small>{voters} {voters === 1 ? 'rating' : 'ratings'}</small>
           </div>
         ))}
       </section>
@@ -917,6 +954,7 @@ function ChatWidget({ user }: { user: UserSession }) {
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<ChatConnectionStatus>('connecting');
   const [unreadCount, setUnreadCount] = useState(0);
+  const [showBubblePreview, setShowBubblePreview] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const isOpenRef = useRef(isOpen);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -1003,11 +1041,27 @@ function ChatWidget({ user }: { user: UserSession }) {
   }, [isOpen, messages]);
 
   const latestMessage = messages.at(-1);
+
+  useEffect(() => {
+    if (!latestMessage || isOpen) {
+      setShowBubblePreview(false);
+      return undefined;
+    }
+
+    setShowBubblePreview(true);
+    const timeout = window.setTimeout(() => {
+      setShowBubblePreview(false);
+    }, 5000);
+
+    return () => window.clearTimeout(timeout);
+  }, [isOpen, latestMessage?.id]);
+
   const preview = latestMessage
     ? `${latestMessage.authorName}: ${latestMessage.text}`
     : status === 'connected'
       ? 'Connected to public chat'
       : 'Connecting to public chat...';
+  const isBubbleExpanded = Boolean(showBubblePreview && latestMessage && !isOpen);
   const canSend = status === 'connected' && normalizeChatText(draft).length > 0;
 
   const sendMessage = (event: FormEvent) => {
@@ -1032,9 +1086,14 @@ function ChatWidget({ user }: { user: UserSession }) {
 
   return (
     <>
-      <button className="chat-bubble" type="button" onClick={() => setIsOpen(true)} aria-label="Open public chat">
-        <span className="chat-bubble-title">Live chat</span>
-        <span className="chat-bubble-preview">{preview}</span>
+      <button
+        className={`chat-bubble ${isBubbleExpanded ? 'expanded' : 'compact'}`}
+        type="button"
+        onClick={() => setIsOpen(true)}
+        aria-label="Open public chat"
+      >
+        <span className="chat-bubble-title">{isBubbleExpanded ? 'Live chat' : 'Chat'}</span>
+        {isBubbleExpanded && <span className="chat-bubble-preview">{preview}</span>}
         {unreadCount > 0 && <strong>{unreadCount}</strong>}
       </button>
 
