@@ -1,4 +1,5 @@
 export type JuryPoint = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 10 | 12;
+export type Language = 'en' | 'de';
 
 export interface Participant {
   id: string;
@@ -39,10 +40,12 @@ export interface AppState {
   activeUserId: string | null;
   roomId: string;
   lastSyncedAt: string | null;
+  language: Language;
   users: Record<string, UserSession>;
 }
 
 export type ParticipantFilter = 'all' | 'rated' | 'unrated' | 'jury';
+export type ParticipantSort = 'default' | 'favorites';
 
 export interface SyncRoomState {
   schemaVersion: number;

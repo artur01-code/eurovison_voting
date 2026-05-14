@@ -28,17 +28,19 @@ import { exportUserJson, exportWhatsAppText, importUserJson } from './lib/export
 import { getGroupJuryScores, getGroupRatingScores, getUserFavorites } from './lib/groupScore';
 import { fetchRoom, pushUserToRoom } from './lib/sync';
 import { getChatWebSocketUrl, isChatMessage, mergeChatMessages, normalizeChatText } from './lib/chat';
-import type { AppState, ChatConnectionStatus, ChatMessage, Participant, ParticipantFilter, UserSession } from './types';
+import { getCopy, type Copy } from './lib/i18n';
+import type {
+  AppState,
+  ChatConnectionStatus,
+  ChatMessage,
+  Language,
+  Participant,
+  ParticipantFilter,
+  ParticipantSort,
+  UserSession
+} from './types';
 
 type View = 'home' | 'categories' | 'jury' | 'export' | 'scoreboard';
-
-const viewLabels: Record<View, string> = {
-  home: 'Entries',
-  categories: 'Categories',
-  jury: 'Jury',
-  export: 'Export',
-  scoreboard: 'Final'
-};
 
 const viewIcons: Record<View, string> = {
   home: '♪',
@@ -52,14 +54,24 @@ function App() {
   const [state, setState] = useState<AppState>(() => loadState());
   const [view, setView] = useState<View>('home');
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState('Auto-sync starting...');
+  const [syncMessage, setSyncMessage] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
+  const copy = useMemo(() => getCopy(state.language), [state.language]);
 
   useEffect(() => {
     saveState(state);
   }, [state]);
 
+  useEffect(() => {
+    document.documentElement.lang = state.language;
+    setSyncMessage('');
+  }, [state.language]);
+
   const user = activeUser(state);
+
+  const setLanguage = (language: Language) => {
+    setState((current) => ({ ...current, language }));
+  };
 
   const syncNow = useCallback(
     async (mode: 'push-pull' | 'pull' = 'push-pull') => {
@@ -69,7 +81,7 @@ function App() {
 
       const currentUser = user;
       setIsSyncing(true);
-      setSyncMessage(mode === 'pull' ? 'Refreshing group scores...' : 'Auto-syncing...');
+      setSyncMessage(mode === 'pull' ? copy.sync.refreshingScores : copy.sync.autoSyncing);
 
       try {
         const room =
@@ -82,15 +94,15 @@ function App() {
           users: mergeUsersByUpdatedAt(current.users, room.users),
           lastSyncedAt: new Date().toISOString()
         }));
-        setSyncMessage(`${Object.keys(room.users).length} users in this room`);
+        setSyncMessage(copy.sync.usersInRoom(Object.keys(room.users).length));
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Sync failed.';
+        const message = error instanceof Error ? error.message : copy.sync.failed;
         setSyncMessage(message);
       } finally {
         setIsSyncing(false);
       }
     },
-    [state.activeUserId, state.isUnlocked, state.roomId, user]
+    [copy, state.activeUserId, state.isUnlocked, state.roomId, user]
   );
 
   useEffect(() => {
@@ -124,6 +136,9 @@ function App() {
   if (!state.isUnlocked) {
     return (
       <LoginScreen
+        copy={copy}
+        language={state.language}
+        onLanguageChange={setLanguage}
         onUnlock={() => setState((current) => ({ ...current, isUnlocked: true }))}
       />
     );
@@ -133,6 +148,9 @@ function App() {
     return (
       <UserGate
         state={state}
+        copy={copy}
+        language={state.language}
+        onLanguageChange={setLanguage}
         onSelectUser={(name) => setState((current) => ensureUser(current, name))}
         onLock={() => setState((current) => ({ ...current, isUnlocked: false }))}
       />
@@ -147,22 +165,26 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Private Jury 2026</p>
-          <h1>{viewLabels[view]}</h1>
+          <p className="eyebrow">{copy.common.appTitle}</p>
+          <h1>{copy.nav[view]}</h1>
         </div>
-        <button
-          className="icon-button"
-          type="button"
-          title="Lock app"
-          onClick={() => setState((current) => ({ ...current, isUnlocked: false }))}
-        >
-          ⌕
-        </button>
+        <div className="topbar-actions">
+          <LanguageSwitch language={state.language} onChange={setLanguage} />
+          <button
+            className="icon-button"
+            type="button"
+            title={copy.common.lockApp}
+            onClick={() => setState((current) => ({ ...current, isUnlocked: false }))}
+          >
+            ⌕
+          </button>
+        </div>
       </header>
 
       <main>
         {selectedParticipant ? (
           <ParticipantDetail
+            copy={copy}
             user={user}
             participant={selectedParticipant}
             onBack={() => setSelectedParticipantId(null)}
@@ -176,15 +198,21 @@ function App() {
         ) : (
           <>
             {view === 'home' && (
-              <HomeView user={user} onOpenParticipant={(participant) => setSelectedParticipantId(participant.id)} />
+              <HomeView
+                copy={copy}
+                user={user}
+                onOpenParticipant={(participant) => setSelectedParticipantId(participant.id)}
+              />
             )}
-            {view === 'categories' && <CategoriesView user={user} onUpdateUser={replaceUser} />}
-            {view === 'jury' && <JuryView user={user} onUpdateUser={replaceUser} />}
+            {view === 'categories' && <CategoriesView copy={copy} user={user} onUpdateUser={replaceUser} />}
+            {view === 'jury' && <JuryView copy={copy} user={user} onUpdateUser={replaceUser} />}
             {view === 'export' && (
               <ExportView
+                copy={copy}
+                language={state.language}
                 state={state}
                 user={user}
-                syncMessage={syncMessage}
+                syncMessage={syncMessage || copy.sync.autoStart}
                 isSyncing={isSyncing}
                 onSync={() => syncNow('push-pull')}
                 onRoomChange={(roomId) =>
@@ -206,7 +234,7 @@ function App() {
                   setView('home');
                 }}
                 onReset={() => {
-                  const confirmed = window.confirm('Do you really want to reset all local data?');
+                  const confirmed = window.confirm(copy.export.resetConfirm);
                   if (confirmed) {
                     clearState();
                     setState({ ...createInitialState(), isUnlocked: true });
@@ -218,8 +246,9 @@ function App() {
             {view === 'scoreboard' && (
               <ScoreboardView
                 user={user}
+                copy={copy}
                 users={Object.values(state.users)}
-                syncMessage={syncMessage}
+                syncMessage={syncMessage || copy.sync.autoStart}
                 isSyncing={isSyncing}
                 onSync={() => syncNow('push-pull')}
               />
@@ -228,13 +257,42 @@ function App() {
         )}
       </main>
 
-      {!selectedParticipant && <BottomNav currentView={view} onChange={setView} />}
-      <ChatWidget user={user} />
+      {!selectedParticipant && <BottomNav copy={copy} currentView={view} onChange={setView} />}
+      <ChatWidget copy={copy} user={user} />
     </div>
   );
 }
 
-function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
+function LanguageSwitch({
+  language,
+  onChange
+}: {
+  language: Language;
+  onChange: (language: Language) => void;
+}) {
+  return (
+    <div className="language-switch" aria-label="Language switch">
+      <button className={language === 'en' ? 'active' : ''} type="button" onClick={() => onChange('en')}>
+        EN
+      </button>
+      <button className={language === 'de' ? 'active' : ''} type="button" onClick={() => onChange('de')}>
+        DE
+      </button>
+    </div>
+  );
+}
+
+function LoginScreen({
+  copy,
+  language,
+  onLanguageChange,
+  onUnlock
+}: {
+  copy: Copy;
+  language: Language;
+  onLanguageChange: (language: Language) => void;
+  onUnlock: () => void;
+}) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
@@ -245,29 +303,32 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
       onUnlock();
       return;
     }
-    setError('The password is not correct.');
+    setError(copy.auth.wrongPassword);
   };
 
   return (
     <main className="auth-screen">
       <section className="auth-panel">
-        <p className="eyebrow">Eurovision Prediction Game</p>
+        <div className="auth-header">
+          <p className="eyebrow">{copy.auth.eyebrow}</p>
+          <LanguageSwitch language={language} onChange={onLanguageChange} />
+        </div>
         <h1>Jury 2026</h1>
-        <p className="muted">Private, locally stored, no account required.</p>
+        <p className="muted">{copy.auth.subtitle}</p>
         <form onSubmit={submit} className="stack">
           <label>
-            Master password
+            {copy.auth.masterPassword}
             <input
               autoFocus
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="Enter password"
+              placeholder={copy.auth.passwordPlaceholder}
             />
           </label>
           {error && <p className="error">{error}</p>}
           <button className="primary-button" type="submit">
-            Open app
+            {copy.auth.openApp}
           </button>
         </form>
       </section>
@@ -277,10 +338,16 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
 
 function UserGate({
   state,
+  copy,
+  language,
+  onLanguageChange,
   onSelectUser,
   onLock
 }: {
   state: AppState;
+  copy: Copy;
+  language: Language;
+  onLanguageChange: (language: Language) => void;
   onSelectUser: (name: string) => void;
   onLock: () => void;
 }) {
@@ -297,25 +364,28 @@ function UserGate({
   return (
     <main className="auth-screen">
       <section className="auth-panel">
-        <p className="eyebrow">Local user</p>
-        <h1>Who is voting?</h1>
+        <div className="auth-header">
+          <p className="eyebrow">{copy.auth.localUser}</p>
+          <LanguageSwitch language={language} onChange={onLanguageChange} />
+        </div>
+        <h1>{copy.auth.whoVotes}</h1>
         <form onSubmit={submit} className="stack">
           <label>
-            Your name
+            {copy.auth.yourName}
             <input
               autoFocus
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Jorit"
+              placeholder={copy.auth.namePlaceholder}
             />
           </label>
           <button className="primary-button" type="submit" disabled={!name.trim()}>
-            Continue
+            {copy.auth.continue}
           </button>
         </form>
         {users.length > 0 && (
           <div className="saved-users">
-            <p className="muted">Saved users</p>
+            <p className="muted">{copy.auth.savedUsers}</p>
             {users.map((user) => (
               <button key={user.id} type="button" onClick={() => onSelectUser(user.name)}>
                 {user.name}
@@ -324,7 +394,7 @@ function UserGate({
           </div>
         )}
         <button className="text-button" type="button" onClick={onLock}>
-          Lock app
+          {copy.common.lockApp}
         </button>
       </section>
     </main>
@@ -332,21 +402,24 @@ function UserGate({
 }
 
 function HomeView({
+  copy,
   user,
   onOpenParticipant
 }: {
+  copy: Copy;
   user: UserSession;
   onOpenParticipant: (participant: Participant) => void;
 }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<ParticipantFilter>('all');
+  const [sort, setSort] = useState<ParticipantSort>('default');
   const ratedCount = participants.filter((participant) => isParticipantRated(user, participant.id)).length;
   const progress = Math.round((ratedCount / participants.length) * 100);
 
   const filteredParticipants = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    return participants.filter((participant) => {
+    const filtered = participants.filter((participant) => {
       const matchesSearch =
         !query ||
         [participant.country, participant.artist, participant.song].some((value) =>
@@ -369,16 +442,37 @@ function HomeView({
       }
       return true;
     });
-  }, [filter, search, user]);
+
+    if (sort === 'favorites') {
+      return [...filtered].sort((a, b) => {
+        const averageA = calculateAverageScore(user, a.id);
+        const averageB = calculateAverageScore(user, b.id);
+
+        if (averageA === null && averageB === null) {
+          return a.country.localeCompare(b.country);
+        }
+        if (averageA === null) {
+          return 1;
+        }
+        if (averageB === null) {
+          return -1;
+        }
+
+        return averageB - averageA || a.country.localeCompare(b.country);
+      });
+    }
+
+    return filtered;
+  }, [filter, search, sort, user]);
 
   return (
     <section className="screen">
       <div className="hero-band">
         <div>
-          <p className="eyebrow">Hi {user.name}</p>
-          <h2>{ratedCount} of {participants.length} rated</h2>
+          <p className="eyebrow">{copy.home.greeting(user.name)}</p>
+          <h2>{copy.home.ratedProgress(ratedCount, participants.length)}</h2>
         </div>
-        <div className="progress-ring" aria-label={`${progress} percent progress`}>
+        <div className="progress-ring" aria-label={copy.home.progressLabel(progress)}>
           {progress}%
         </div>
       </div>
@@ -391,7 +485,7 @@ function HomeView({
           className="search"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search country, artist, or song"
+          placeholder={copy.home.searchPlaceholder}
         />
         <div className="segmented">
           {(['all', 'rated', 'unrated', 'jury'] as const).map((option) => (
@@ -401,10 +495,22 @@ function HomeView({
               className={filter === option ? 'active' : ''}
               onClick={() => setFilter(option)}
             >
-              {option === 'all' && 'All'}
-              {option === 'rated' && 'Rated'}
-              {option === 'unrated' && 'Open'}
-              {option === 'jury' && 'Jury'}
+              {option === 'all' && copy.home.all}
+              {option === 'rated' && copy.home.rated}
+              {option === 'unrated' && copy.home.unrated}
+              {option === 'jury' && copy.nav.jury}
+            </button>
+          ))}
+        </div>
+        <div className="segmented wide">
+          {(['default', 'favorites'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={sort === option ? 'active' : ''}
+              onClick={() => setSort(option)}
+            >
+              {option === 'default' ? copy.home.sortDefault : copy.home.sortFavorites}
             </button>
           ))}
         </div>
@@ -416,6 +522,7 @@ function HomeView({
             key={participant.id}
             participant={participant}
             user={user}
+            copy={copy}
             onClick={() => onOpenParticipant(participant)}
           />
         ))}
@@ -427,10 +534,12 @@ function HomeView({
 function ParticipantCard({
   participant,
   user,
+  copy,
   onClick
 }: {
   participant: Participant;
   user: UserSession;
+  copy: Copy;
   onClick: () => void;
 }) {
   const average = calculateAverageScore(user, participant.id);
@@ -446,20 +555,22 @@ function ParticipantCard({
       </div>
       <div className="card-stats">
         {juryPoint && <span className="jury-pill">{juryPoint}</span>}
-        <span>{average === null ? 'open' : `${average} avg`}</span>
-        {total !== null && <small>{total} total</small>}
+        <span>{average === null ? copy.common.open : `${average} ${copy.common.averageShort}`}</span>
+        {total !== null && <small>{total} {copy.common.total}</small>}
       </div>
     </button>
   );
 }
 
 function ParticipantDetail({
+  copy,
   user,
   participant,
   onBack,
   onNext,
   onUpdateUser
 }: {
+  copy: Copy;
   user: UserSession;
   participant: Participant;
   onBack: () => void;
@@ -473,7 +584,7 @@ function ParticipantDetail({
   return (
     <section className="screen detail-screen">
       <button className="text-button back-button" type="button" onClick={onBack}>
-        ← Back
+        ← {copy.common.back}
       </button>
       <div className="detail-hero">
         <p className="eyebrow">{participant.country}</p>
@@ -483,18 +594,18 @@ function ParticipantDetail({
 
       <div className="score-summary">
         <div>
-          <span>Average</span>
+          <span>{copy.detail.average}</span>
           <strong>{average === null ? '–' : average}</strong>
         </div>
         <div>
-          <span>Total</span>
+          <span>{copy.detail.total}</span>
           <strong>{total === null ? '–' : total}</strong>
         </div>
       </div>
 
       <div className="stack">
         {user.categories.length === 0 && (
-          <p className="empty">Create categories first to assign scores.</p>
+          <p className="empty">{copy.detail.emptyCategories}</p>
         )}
         {user.categories.map((category) => {
           const score = rating.scores[category.id];
@@ -524,7 +635,7 @@ function ParticipantDetail({
                   onUpdateUser((currentUser) => setCategoryScore(currentUser, participant.id, category, null))
                 }
               >
-                clear
+                {copy.detail.clear}
               </button>
             </label>
           );
@@ -532,11 +643,11 @@ function ParticipantDetail({
       </div>
 
       <label className="notes-box">
-        Notes
+        {copy.detail.notes}
         <textarea
           value={rating.notes}
           rows={5}
-          placeholder="Impression, highlights, live reaction..."
+          placeholder={copy.detail.notesPlaceholder}
           onChange={(event) =>
             onUpdateUser((currentUser) =>
               saveParticipantRating(currentUser, participant.id, { notes: event.target.value })
@@ -546,16 +657,18 @@ function ParticipantDetail({
       </label>
 
       <button className="primary-button sticky-action" type="button" onClick={onNext}>
-        Next entry
+        {copy.detail.nextEntry}
       </button>
     </section>
   );
 }
 
 function CategoriesView({
+  copy,
   user,
   onUpdateUser
 }: {
+  copy: Copy;
   user: UserSession;
   onUpdateUser: (update: (user: UserSession) => UserSession) => void;
 }) {
@@ -569,24 +682,24 @@ function CategoriesView({
       setNewCategory('');
       setError('');
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Category could not be created.');
+      setError(copy.categories.createError);
     }
   };
 
   return (
     <section className="screen">
       <div className="section-copy">
-        <h2>Global categories</h2>
-        <p className="muted">These categories apply to all entries. Scores are saved per country.</p>
+        <h2>{copy.categories.title}</h2>
+        <p className="muted">{copy.categories.description}</p>
       </div>
       <form onSubmit={submit} className="inline-form">
         <input
           value={newCategory}
           onChange={(event) => setNewCategory(event.target.value)}
-          placeholder="e.g. Outfit"
+          placeholder={copy.categories.placeholder}
         />
         <button type="submit" className="primary-button" disabled={!newCategory.trim()}>
-          Add
+          {copy.categories.add}
         </button>
       </form>
       {error && <p className="error">{error}</p>}
@@ -595,7 +708,7 @@ function CategoriesView({
         {user.categories.map((category) => (
           <div className="category-card" key={category.id}>
             <input
-              aria-label={`Category ${category.name}`}
+              aria-label={copy.categories.categoryLabel(category.name)}
               value={category.name}
               onChange={(event) =>
                 onUpdateUser((currentUser) => {
@@ -612,7 +725,7 @@ function CategoriesView({
               type="button"
               onClick={() => onUpdateUser((currentUser) => deleteCategory(currentUser, category.id))}
             >
-              Remove
+              {copy.categories.remove}
             </button>
           </div>
         ))}
@@ -622,9 +735,11 @@ function CategoriesView({
 }
 
 function JuryView({
+  copy,
   user,
   onUpdateUser
 }: {
+  copy: Copy;
   user: UserSession;
   onUpdateUser: (update: (user: UserSession) => UserSession) => void;
 }) {
@@ -637,13 +752,13 @@ function JuryView({
     <section className="screen">
       <div className={`jury-status ${celebrate ? 'celebrate' : ''}`}>
         <div>
-          <p className="eyebrow">Jury points</p>
-          <h2>{validation.isComplete ? 'Top 10 complete' : `${validation.missingPoints.length} values missing`}</h2>
+          <p className="eyebrow">{copy.jury.title}</p>
+          <h2>{validation.isComplete ? copy.jury.complete : copy.jury.missingValues(validation.missingPoints.length)}</h2>
         </div>
-        <span>{validation.isUnique ? 'Unique' : 'Duplicate'}</span>
+        <span>{validation.isUnique ? copy.jury.unique : copy.jury.duplicate}</span>
       </div>
       {!validation.isComplete && (
-        <p className="hint">Missing: {validation.missingPoints.map((point) => `${point} pts`).join(', ')}</p>
+        <p className="hint">{copy.jury.missing(validation.missingPoints)}</p>
       )}
 
       <div className="jury-list">
@@ -666,7 +781,7 @@ function JuryView({
                     }
                   }}
                 >
-                  <option value="">Select country</option>
+                  <option value="">{copy.jury.selectCountry}</option>
                   {participants.map((participant) => {
                     const isTaken = selectedIds.has(participant.id) && selected !== participant.id;
                     return (
@@ -678,7 +793,7 @@ function JuryView({
                 </select>
                 {suggestion && (
                   <span className="category-suggestion">
-                    category hint: {suggestion.participant.country} · {suggestion.average} avg
+                    {copy.jury.categoryHint(suggestion.participant.country, suggestion.average)}
                   </span>
                 )}
               </div>
@@ -702,16 +817,16 @@ function getCategorySuggestions(user: UserSession) {
   return new Map(JURY_POINTS.map((point, index) => [point, sorted[index] ?? null]));
 }
 
-function FinalTopTen({ user }: { user: UserSession }) {
+function FinalTopTen({ copy, user }: { copy: Copy; user: UserSession }) {
   const topTen = getFinalTopTen(participants, user);
 
   return (
     <section className="final-card">
-      <h2>Personal Top 10</h2>
+      <h2>{copy.jury.personalTopTen}</h2>
       {topTen.map(({ point, participant }) => (
         <div key={point} className="topten-row">
           <strong>{point}</strong>
-          <span>{participant ? `${participant.country} - ${participant.song}` : 'Still open'}</span>
+          <span>{participant ? `${participant.country} - ${participant.song}` : copy.common.stillOpen}</span>
         </div>
       ))}
     </section>
@@ -719,6 +834,8 @@ function FinalTopTen({ user }: { user: UserSession }) {
 }
 
 function ExportView({
+  copy,
+  language,
   state,
   user,
   syncMessage,
@@ -729,6 +846,8 @@ function ExportView({
   onSwitchUser,
   onReset
 }: {
+  copy: Copy;
+  language: Language;
   state: AppState;
   user: UserSession;
   syncMessage: string;
@@ -742,26 +861,26 @@ function ExportView({
   const [mode, setMode] = useState<'text' | 'json'>('text');
   const [importText, setImportText] = useState('');
   const [message, setMessage] = useState('');
-  const textExport = exportWhatsAppText(participants, user);
+  const textExport = exportWhatsAppText(participants, user, language);
   const jsonExport = exportUserJson(state, user);
   const exportValue = mode === 'text' ? textExport : jsonExport;
 
-  const copy = async () => {
+  const copyToClipboard = async () => {
     await navigator.clipboard?.writeText(exportValue);
-    setMessage('Copied to clipboard.');
+    setMessage(copy.export.copied);
   };
 
   return (
     <section className="screen">
       <div className="section-copy">
-        <h2>Share and back up</h2>
-        <p className="muted">Export your score as WhatsApp text or JSON for another device.</p>
+        <h2>{copy.export.title}</h2>
+        <p className="muted">{copy.export.description}</p>
       </div>
       <section className="sync-panel">
         <div>
-          <p className="eyebrow">Auto-sync room</p>
+          <p className="eyebrow">{copy.sync.autoRoom}</p>
           <label>
-            Room ID
+            {copy.sync.roomId}
             <input
               value={state.roomId}
               onChange={(event) => onRoomChange(event.target.value)}
@@ -771,9 +890,9 @@ function ExportView({
         </div>
         <div className="sync-actions">
           <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing || !state.roomId.trim()}>
-            {isSyncing ? 'Refreshing...' : 'Refresh now'}
+            {isSyncing ? copy.common.refreshing : copy.common.refreshNow}
           </button>
-          <span className="sync-note">You are automatically in this shared room after login.</span>
+          <span className="sync-note">{copy.sync.autoRoomNote}</span>
           <p className="muted">{syncMessage}</p>
         </div>
       </section>
@@ -786,17 +905,17 @@ function ExportView({
         </button>
       </div>
       <textarea className="export-box" readOnly value={exportValue} rows={14} />
-      <button className="primary-button" type="button" onClick={copy}>
-        Copy
+      <button className="primary-button" type="button" onClick={copyToClipboard}>
+        {copy.common.copy}
       </button>
       {message && <p className="success">{message}</p>}
 
       <details className="import-panel">
-        <summary>Import JSON</summary>
+        <summary>{copy.export.importSummary}</summary>
         <textarea
           value={importText}
           onChange={(event) => setImportText(event.target.value)}
-          placeholder="Paste JSON here"
+          placeholder={copy.export.pasteJson}
           rows={7}
         />
         <button
@@ -806,22 +925,22 @@ function ExportView({
             try {
               onImport(importUserJson(importText));
               setImportText('');
-              setMessage('Import complete.');
+              setMessage(copy.export.importComplete);
             } catch {
-              setMessage('Import failed. Please check the JSON.');
+              setMessage(copy.export.importFailed);
             }
           }}
         >
-          Import
+          {copy.common.import}
         </button>
       </details>
 
       <div className="danger-zone">
         <button type="button" onClick={onSwitchUser}>
-          Switch user
+          {copy.export.switchUser}
         </button>
         <button type="button" onClick={onReset}>
-          Reset all
+          {copy.export.resetAll}
         </button>
       </div>
     </section>
@@ -830,12 +949,14 @@ function ExportView({
 
 function ScoreboardView({
   user,
+  copy,
   users,
   syncMessage,
   isSyncing,
   onSync
 }: {
   user: UserSession;
+  copy: Copy;
   users: UserSession[];
   syncMessage: string;
   isSyncing: boolean;
@@ -850,35 +971,35 @@ function ScoreboardView({
   return (
     <section className="screen party-mode">
       <section className="winner-card">
-        <p className="eyebrow">{users.length} users in group scores</p>
-        <h2>{winner ? winner.participant.country : 'No winner yet'}</h2>
+        <p className="eyebrow">{copy.final.usersInGroup(users.length)}</p>
+        <h2>{winner ? winner.participant.country : copy.final.noWinner}</h2>
         <p>
           {winner
-            ? `${winner.points} jury points from ${winner.voters} scorecards`
-            : 'The live ranking appears here automatically once jury points are available.'}
+            ? copy.final.winnerSummary(winner.points, winner.voters)
+            : copy.final.waitingForRanking}
         </p>
         <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing}>
-          {isSyncing ? 'Refreshing...' : 'Refresh now'}
+          {isSyncing ? copy.common.refreshing : copy.common.refreshNow}
         </button>
         <p className="muted">{syncMessage}</p>
       </section>
 
       <section className="final-card">
-        <h2>Group favorites</h2>
+        <h2>{copy.final.groupFavorites}</h2>
         {favorites.map(({ user: favoriteUser, point, participant }) => (
           <div key={favoriteUser.id} className="favorite-row">
             <div>
               <strong>{favoriteUser.name}</strong>
-              <small>{point ? `${point} points` : 'still open'}</small>
+              <small>{point ? copy.common.points(point) : copy.common.stillOpen}</small>
             </div>
-            <span>{participant ? `${participant.country} - ${participant.song}` : 'No jury score'}</span>
+            <span>{participant ? `${participant.country} - ${participant.song}` : copy.final.noJuryScore}</span>
           </div>
         ))}
       </section>
 
       <section className="final-card">
-        <h2>Jury total ranking</h2>
-        {groupJuryScores.length === 0 && <p className="empty">No jury points synced yet.</p>}
+        <h2>{copy.final.juryTotalRanking}</h2>
+        {groupJuryScores.length === 0 && <p className="empty">{copy.final.noJuryPoints}</p>}
         {groupJuryScores.map(({ participant, points, voters, twelvePoints }, index) => (
           <div key={participant.id} className="scoreboard-row">
             <span>{index + 1}</span>
@@ -887,19 +1008,19 @@ function ScoreboardView({
               <small>{participant.song}</small>
             </div>
             <strong>{points}</strong>
-            <small>{voters}× · {twelvePoints}×12</small>
+            <small>{voters} {voters === 1 ? copy.common.rating : copy.common.ratings} · {twelvePoints}×12</small>
           </div>
         ))}
       </section>
 
       <section className="final-card">
         <div className="card-title-row">
-          <h2>Category favorites</h2>
+          <h2>{copy.final.categoryFavorites}</h2>
           <button
             className="info-button"
             type="button"
             aria-expanded={showCategoryInfo}
-            aria-label="Explain category favorites"
+            aria-label={copy.final.categoryInfoLabel}
             onClick={() => setShowCategoryInfo((current) => !current)}
           >
             i
@@ -907,11 +1028,10 @@ function ScoreboardView({
         </div>
         {showCategoryInfo && (
           <p className="info-note">
-            The average is calculated from each user's category scores for that country. The rating count shows how many
-            users have rated that country with categories.
+            {copy.final.categoryInfo}
           </p>
         )}
-        {groupRatingScores.length === 0 && <p className="empty">No category scores synced yet.</p>}
+        {groupRatingScores.length === 0 && <p className="empty">{copy.final.noCategoryScores}</p>}
         {groupRatingScores.slice(0, 12).map(({ participant, average, voters }, index) => (
           <div key={participant.id} className="scoreboard-row">
             <span>{index + 1}</span>
@@ -919,21 +1039,29 @@ function ScoreboardView({
               <strong>{participant.country}</strong>
               <small>{participant.song}</small>
             </div>
-            <strong>{average} avg</strong>
-            <small>{voters} {voters === 1 ? 'rating' : 'ratings'}</small>
+            <strong>{average} {copy.common.averageShort}</strong>
+            <small>{voters} {voters === 1 ? copy.common.rating : copy.common.ratings}</small>
           </div>
         ))}
       </section>
 
-      <FinalTopTen user={user} />
+      <FinalTopTen copy={copy} user={user} />
     </section>
   );
 }
 
-function BottomNav({ currentView, onChange }: { currentView: View; onChange: (view: View) => void }) {
+function BottomNav({
+  copy,
+  currentView,
+  onChange
+}: {
+  copy: Copy;
+  currentView: View;
+  onChange: (view: View) => void;
+}) {
   return (
     <nav className="bottom-nav" aria-label="Main navigation">
-      {(Object.keys(viewLabels) as View[]).map((view) => (
+      {(Object.keys(copy.nav) as View[]).map((view) => (
         <button
           key={view}
           type="button"
@@ -941,14 +1069,14 @@ function BottomNav({ currentView, onChange }: { currentView: View; onChange: (vi
           onClick={() => onChange(view)}
         >
           <span>{viewIcons[view]}</span>
-          {viewLabels[view]}
+          {copy.nav[view]}
         </button>
       ))}
     </nav>
   );
 }
 
-function ChatWidget({ user }: { user: UserSession }) {
+function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -1059,8 +1187,8 @@ function ChatWidget({ user }: { user: UserSession }) {
   const preview = latestMessage
     ? `${latestMessage.authorName}: ${latestMessage.text}`
     : status === 'connected'
-      ? 'Connected to public chat'
-      : 'Connecting to public chat...';
+      ? copy.chat.connectedPreview
+      : copy.chat.connectingPreview;
   const isBubbleExpanded = Boolean(showBubblePreview && latestMessage && !isOpen);
   const canSend = status === 'connected' && normalizeChatText(draft).length > 0;
 
@@ -1090,9 +1218,9 @@ function ChatWidget({ user }: { user: UserSession }) {
         className={`chat-bubble ${isBubbleExpanded ? 'expanded' : 'compact'}`}
         type="button"
         onClick={() => setIsOpen(true)}
-        aria-label="Open public chat"
+        aria-label={copy.chat.openLabel}
       >
-        <span className="chat-bubble-title">{isBubbleExpanded ? 'Live chat' : 'Chat'}</span>
+        <span className="chat-bubble-title">{isBubbleExpanded ? copy.chat.liveChat : copy.chat.compact}</span>
         {isBubbleExpanded && <span className="chat-bubble-preview">{preview}</span>}
         {unreadCount > 0 && <strong>{unreadCount}</strong>}
       </button>
@@ -1102,23 +1230,23 @@ function ChatWidget({ user }: { user: UserSession }) {
           <section className="chat-modal">
             <header className="chat-header">
               <div>
-                <p className="eyebrow">Automatically connected</p>
-                <h2 id="chat-title">Eurovision room</h2>
+                <p className="eyebrow">{copy.chat.automaticallyConnected}</p>
+                <h2 id="chat-title">{copy.chat.roomTitle}</h2>
               </div>
-              <button className="icon-button" type="button" title="Close chat" onClick={() => setIsOpen(false)}>
+              <button className="icon-button" type="button" title={copy.chat.close} onClick={() => setIsOpen(false)}>
                 ×
               </button>
             </header>
 
             <div className={`chat-status ${status}`}>
-              {status === 'connected' && 'Connected'}
-              {status === 'connecting' && 'Connecting...'}
-              {status === 'disconnected' && 'Disconnected. Reconnecting...'}
-              {status === 'unavailable' && 'WebSocket is unavailable in this browser.'}
+              {status === 'connected' && copy.chat.connected}
+              {status === 'connecting' && copy.chat.connecting}
+              {status === 'disconnected' && copy.chat.disconnected}
+              {status === 'unavailable' && copy.chat.unavailable}
             </div>
 
             <div className="chat-messages" ref={listRef}>
-              {messages.length === 0 && <p className="empty">No messages yet. You are already in the public chat.</p>}
+              {messages.length === 0 && <p className="empty">{copy.chat.empty}</p>}
               {messages.map((message) => (
                 <article
                   key={message.id}
@@ -1143,10 +1271,10 @@ function ChatWidget({ user }: { user: UserSession }) {
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 maxLength={360}
-                placeholder={status === 'connected' ? 'Write a message...' : 'Chat server is not connected'}
+                placeholder={status === 'connected' ? copy.chat.placeholderConnected : copy.chat.placeholderDisconnected}
               />
               <button className="primary-button" type="submit" disabled={!canSend}>
-                Send
+                {copy.common.send}
               </button>
             </form>
           </section>

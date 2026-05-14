@@ -1,5 +1,6 @@
 import { JURY_POINTS, getFinalTopTen } from './appState';
-import type { AppState, Participant, UserSession } from '../types';
+import { DEFAULT_LANGUAGE, getCopy } from './i18n';
+import type { AppState, Language, Participant, UserSession } from '../types';
 
 export const exportUserJson = (state: AppState, user: UserSession) =>
   JSON.stringify(
@@ -27,16 +28,20 @@ export const importUserJson = (rawJson: string): UserSession => {
   return user as UserSession;
 };
 
-export const exportWhatsAppText = (participants: Participant[], user: UserSession) => {
+export const exportWhatsAppText = (
+  participants: Participant[],
+  user: UserSession,
+  language: Language = DEFAULT_LANGUAGE
+) => {
+  const copy = getCopy(language);
   const topTen = getFinalTopTen(participants, user);
-  const lines = [`${user.name}'s Eurovision Jury 2026:`];
+  const lines = [copy.exportText.title(user.name)];
 
   for (const { point, participant } of topTen) {
-    lines.push(
-      `${point} points: ${
-        participant ? `${participant.country} - ${participant.artist} - ${participant.song}` : 'open'
-      }`
-    );
+    const entry = participant
+      ? `${participant.country} - ${participant.artist} - ${participant.song}`
+      : copy.exportText.open;
+    lines.push(copy.exportText.points(point, entry));
   }
 
   const notes = participants
@@ -47,12 +52,12 @@ export const exportWhatsAppText = (participants: Participant[], user: UserSessio
     .filter((line): line is string => Boolean(line));
 
   if (notes.length > 0) {
-    lines.push('', 'Notes/Favorites:', ...notes.slice(0, 8));
+    lines.push('', copy.exportText.notesTitle, ...notes.slice(0, 8));
   }
 
   const missing = JURY_POINTS.filter((point) => !user.juryPoints[point]);
   if (missing.length > 0) {
-    lines.push('', `Still open: ${missing.join(', ')} points`);
+    lines.push('', copy.exportText.stillOpen(missing));
   }
 
   return lines.join('\n');

@@ -2,15 +2,17 @@ import type {
   AppState,
   JuryPoint,
   JuryPointsAssignment,
+  Language,
   Participant,
   ParticipantRating,
   RatingCategory,
   SyncRoomState,
   UserSession
 } from '../types';
+import { DEFAULT_LANGUAGE, isLanguage } from './i18n';
 
 export const STORAGE_KEY = 'eurovision-jury-2026:v1';
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const JURY_POINTS = [12, 10, 8, 7, 6, 5, 4, 3, 2, 1] as const satisfies readonly JuryPoint[];
 export const DEFAULT_MASTER_PASSWORD = import.meta.env.VITE_MASTER_PASSWORD ?? 'eurovision2026';
 export const DEFAULT_ROOM_ID = import.meta.env.VITE_ROOM_ID ?? 'eurovision-2026-private';
@@ -42,6 +44,7 @@ export const createInitialState = (): AppState => ({
   activeUserId: null,
   roomId: DEFAULT_ROOM_ID,
   lastSyncedAt: null,
+  language: DEFAULT_LANGUAGE,
   users: {}
 });
 
@@ -337,7 +340,7 @@ export const migrateState = (unknownState: unknown): AppState => {
   }
 
   const candidate = unknownState as Partial<AppState>;
-  if (candidate.schemaVersion !== 1 && candidate.schemaVersion !== SCHEMA_VERSION) {
+  if (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2 && candidate.schemaVersion !== SCHEMA_VERSION) {
     return createInitialState();
   }
 
@@ -347,6 +350,7 @@ export const migrateState = (unknownState: unknown): AppState => {
     activeUserId: candidate.activeUserId ?? null,
     roomId: candidate.roomId ?? DEFAULT_ROOM_ID,
     lastSyncedAt: candidate.lastSyncedAt ?? null,
+    language: isLanguage(candidate.language) ? candidate.language : DEFAULT_LANGUAGE,
     users: candidate.users ?? {}
   };
 };
