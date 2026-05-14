@@ -54,3 +54,13 @@ export interface SyncRoomState {
 export interface SyncResponse {
   room: SyncRoomState;
 }
+
+export interface ChatMessage {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: string;
+}
+
+export type ChatConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'unavailable';

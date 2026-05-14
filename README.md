@@ -18,7 +18,7 @@ eurovision2026
 You can override it with a local `.env` file:
 
 ```bash
-VITE_MASTER_PASSWORD=dein-passwort
+VITE_MASTER_PASSWORD=your-password
 ```
 
 ## Build And Tests
@@ -41,7 +41,24 @@ VITE_ROOM_ID=eurovision-2026-private
 VITE_MASTER_PASSWORD=your-password
 ```
 
-`VITE_ROOM_ID` is the shared private room. It can also be changed in the Export/Sync section inside the app. All devices using the same room ID see the same group scores after syncing.
+`VITE_ROOM_ID` is the shared private room. It can also be changed in the Export/Sync section inside the app. Users are placed into this room automatically after entering their local name. The app pushes local changes and refreshes group scores in the background; the visible refresh button is only a manual fallback.
+
+## Public WebSocket Chat
+
+The app includes one shared public chat. Locally, start the chat server in a second terminal:
+
+```bash
+npm run chat
+```
+
+The browser connects to `ws://127.0.0.1:8787` by default during local development. For production, run `server/chat-server.js` as a separate long-lived Node process and point the app to it:
+
+```bash
+VITE_CHAT_WS_URL=wss://your-chat-host.example.com
+CHAT_PORT=8787
+```
+
+The chat server keeps the latest messages in memory. It is intentionally small and public: everyone connected to the WebSocket endpoint sees the same chat. After login, the app connects to the public chat automatically. The floating bubble only opens the chat modal; it is not a join step.
 
 ## Data
 
@@ -61,6 +78,7 @@ VITE_MASTER_PASSWORD=your-password
 - Classic jury points `1, 2, 3, 4, 5, 6, 7, 8, 10, 12`
 - Mobile dropdown assignment with duplicate protection
 - Serverless sync for multiple users
+- Public WebSocket chat with floating preview bubble and modal overlay
 - Group scores with winner, jury total ranking, category favorites, and favorites per person
 - Progress, search, filters, final Top 10, and compact scoreboard view
 - PWA manifest and simple service worker

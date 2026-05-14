@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { participants } from './data/participants';
 import {
   DEFAULT_MASTER_PASSWORD,
@@ -27,7 +27,8 @@ import {
 import { exportUserJson, exportWhatsAppText, importUserJson } from './lib/export';
 import { getGroupJuryScores, getGroupRatingScores, getUserFavorites } from './lib/groupScore';
 import { fetchRoom, pushUserToRoom } from './lib/sync';
-import type { AppState, Participant, ParticipantFilter, UserSession } from './types';
+import { getChatWebSocketUrl, isChatMessage, mergeChatMessages, normalizeChatText } from './lib/chat';
+import type { AppState, ChatConnectionStatus, ChatMessage, Participant, ParticipantFilter, UserSession } from './types';
 
 type View = 'home' | 'categories' | 'jury' | 'export' | 'scoreboard';
 
@@ -51,7 +52,7 @@ function App() {
   const [state, setState] = useState<AppState>(() => loadState());
   const [view, setView] = useState<View>('home');
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState('Not synced yet');
+  const [syncMessage, setSyncMessage] = useState('Auto-sync starting...');
   const [isSyncing, setIsSyncing] = useState(false);
 
   useEffect(() => {
@@ -68,7 +69,7 @@ function App() {
 
       const currentUser = user;
       setIsSyncing(true);
-      setSyncMessage(mode === 'pull' ? 'Loading group scores...' : 'Syncing...');
+      setSyncMessage(mode === 'pull' ? 'Refreshing group scores...' : 'Auto-syncing...');
 
       try {
         const room =
@@ -228,6 +229,7 @@ function App() {
       </main>
 
       {!selectedParticipant && <BottomNav currentView={view} onChange={setView} />}
+      <ChatWidget user={user} />
     </div>
   );
 }
@@ -738,7 +740,7 @@ function ExportView({
       </div>
       <section className="sync-panel">
         <div>
-          <p className="eyebrow">Shared room</p>
+          <p className="eyebrow">Auto-sync room</p>
           <label>
             Room ID
             <input
@@ -750,8 +752,9 @@ function ExportView({
         </div>
         <div className="sync-actions">
           <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing || !state.roomId.trim()}>
-            {isSyncing ? 'Syncing...' : 'Sync now'}
+            {isSyncing ? 'Refreshing...' : 'Refresh now'}
           </button>
+          <span className="sync-note">You are automatically in this shared room after login.</span>
           <p className="muted">{syncMessage}</p>
         </div>
       </section>
@@ -832,10 +835,10 @@ function ScoreboardView({
         <p>
           {winner
             ? `${winner.points} jury points from ${winner.voters} scorecards`
-            : 'The live ranking appears here once someone syncs jury points.'}
+            : 'The live ranking appears here automatically once jury points are available.'}
         </p>
         <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing}>
-          {isSyncing ? 'Updating...' : 'Update group scores'}
+          {isSyncing ? 'Refreshing...' : 'Refresh now'}
         </button>
         <p className="muted">{syncMessage}</p>
       </section>
@@ -905,6 +908,192 @@ function BottomNav({ currentView, onChange }: { currentView: View; onChange: (vi
         </button>
       ))}
     </nav>
+  );
+}
+
+function ChatWidget({ user }: { user: UserSession }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const [status, setStatus] = useState<ChatConnectionStatus>('connecting');
+  const [unreadCount, setUnreadCount] = useState(0);
+  const socketRef = useRef<WebSocket | null>(null);
+  const isOpenRef = useRef(isOpen);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+    if (isOpen) {
+      setUnreadCount(0);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!('WebSocket' in window)) {
+      setStatus('unavailable');
+      return undefined;
+    }
+
+    let closedByComponent = false;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      setStatus('connecting');
+      const socket = new WebSocket(getChatWebSocketUrl());
+      socketRef.current = socket;
+
+      socket.addEventListener('open', () => {
+        setStatus('connected');
+      });
+
+      socket.addEventListener('message', (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as {
+            type?: string;
+            messages?: unknown[];
+            message?: unknown;
+          };
+
+          if (payload.type === 'history' && Array.isArray(payload.messages)) {
+            const history = payload.messages.filter(isChatMessage);
+            setMessages((current) => mergeChatMessages(current, history));
+            return;
+          }
+
+          if (payload.type === 'message' && isChatMessage(payload.message)) {
+            setMessages((current) => mergeChatMessages(current, [payload.message as ChatMessage]));
+            if (!isOpenRef.current && payload.message.authorId !== user.id) {
+              setUnreadCount((count) => count + 1);
+            }
+          }
+        } catch {
+          setStatus('disconnected');
+        }
+      });
+
+      socket.addEventListener('close', () => {
+        if (closedByComponent) {
+          return;
+        }
+        setStatus('disconnected');
+        reconnectTimer = window.setTimeout(connect, 2500);
+      });
+
+      socket.addEventListener('error', () => {
+        setStatus('disconnected');
+        socket.close();
+      });
+    };
+
+    connect();
+
+    return () => {
+      closedByComponent = true;
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+      }
+      socketRef.current?.close();
+    };
+  }, [user.id]);
+
+  useEffect(() => {
+    if (isOpen) {
+      listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [isOpen, messages]);
+
+  const latestMessage = messages.at(-1);
+  const preview = latestMessage
+    ? `${latestMessage.authorName}: ${latestMessage.text}`
+    : status === 'connected'
+      ? 'Connected to public chat'
+      : 'Connecting to public chat...';
+  const canSend = status === 'connected' && normalizeChatText(draft).length > 0;
+
+  const sendMessage = (event: FormEvent) => {
+    event.preventDefault();
+    const text = normalizeChatText(draft);
+    const socket = socketRef.current;
+
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    socket.send(
+      JSON.stringify({
+        type: 'message',
+        authorId: user.id,
+        authorName: user.name,
+        text
+      })
+    );
+    setDraft('');
+  };
+
+  return (
+    <>
+      <button className="chat-bubble" type="button" onClick={() => setIsOpen(true)} aria-label="Open public chat">
+        <span className="chat-bubble-title">Live chat</span>
+        <span className="chat-bubble-preview">{preview}</span>
+        {unreadCount > 0 && <strong>{unreadCount}</strong>}
+      </button>
+
+      {isOpen && (
+        <div className="chat-overlay" role="dialog" aria-modal="true" aria-labelledby="chat-title">
+          <section className="chat-modal">
+            <header className="chat-header">
+              <div>
+                <p className="eyebrow">Automatically connected</p>
+                <h2 id="chat-title">Eurovision room</h2>
+              </div>
+              <button className="icon-button" type="button" title="Close chat" onClick={() => setIsOpen(false)}>
+                ×
+              </button>
+            </header>
+
+            <div className={`chat-status ${status}`}>
+              {status === 'connected' && 'Connected'}
+              {status === 'connecting' && 'Connecting...'}
+              {status === 'disconnected' && 'Disconnected. Reconnecting...'}
+              {status === 'unavailable' && 'WebSocket is unavailable in this browser.'}
+            </div>
+
+            <div className="chat-messages" ref={listRef}>
+              {messages.length === 0 && <p className="empty">No messages yet. You are already in the public chat.</p>}
+              {messages.map((message) => (
+                <article
+                  key={message.id}
+                  className={`chat-message ${message.authorId === user.id ? 'own' : ''}`}
+                >
+                  <div>
+                    <strong>{message.authorName}</strong>
+                    <time dateTime={message.createdAt}>
+                      {new Intl.DateTimeFormat(undefined, {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      }).format(new Date(message.createdAt))}
+                    </time>
+                  </div>
+                  <p>{message.text}</p>
+                </article>
+              ))}
+            </div>
+
+            <form className="chat-form" onSubmit={sendMessage}>
+              <input
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                maxLength={360}
+                placeholder={status === 'connected' ? 'Write a message...' : 'Chat server is not connected'}
+              />
+              <button className="primary-button" type="submit" disabled={!canSend}>
+                Send
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
