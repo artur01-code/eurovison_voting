@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { participants } from '../data/participants';
+import { allKnownParticipants, eliminatedParticipants, participants } from '../data/participants';
 import {
   addCategory,
   assignJuryPoints,
@@ -7,7 +7,10 @@ import {
   calculateTotalScore,
   createInitialState,
   createUserSession,
+  ensureUser,
+  getFinalTopTen,
   loadState,
+  migrateState,
   saveParticipantRating,
   saveState,
   setCategoryScore,
@@ -113,5 +116,46 @@ describe('local storage', () => {
     });
 
     expect(user.ratings[participants[0].id].notes).toBe('Starker Refrain');
+  });
+
+  it('resolves eliminated legacy finalists without throwing', () => {
+    const armenia = eliminatedParticipants.find((participant) => participant.country === 'Armenia')!;
+    const user = assignJuryPoints(createUserSession('Jorit'), 12, armenia.id);
+
+    const topTen = getFinalTopTen(allKnownParticipants, user);
+
+    expect(topTen[0].participant?.country).toBe('Armenia');
+    expect(topTen[0].participant?.status).toBe('eliminated');
+  });
+
+  it('adds onboarding state when migrating older users', () => {
+    const user = createUserSession('Jorit');
+    const { hasCompletedOnboarding: _removed, ...legacyUser } = user;
+
+    const migrated = migrateState({
+      ...createInitialState(),
+      schemaVersion: 2,
+      activeUserId: user.id,
+      users: {
+        [user.id]: legacyUser
+      }
+    });
+
+    expect(migrated.users[user.id].hasCompletedOnboarding).toBe(false);
+  });
+
+  it('lets a deleted local user be created again intentionally', () => {
+    const state = {
+      ...createInitialState(),
+      deletedUserIds: {
+        jorit: '2026-05-15T12:00:00.000Z'
+      }
+    };
+
+    const next = ensureUser(state, 'Jorit');
+
+    expect(next.activeUserId).toBe('jorit');
+    expect(next.deletedUserIds.jorit).toBeUndefined();
+    expect(next.users.jorit.name).toBe('Jorit');
   });
 });

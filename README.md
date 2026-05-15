@@ -41,7 +41,7 @@ VITE_ROOM_ID=eurovision-2026-private
 VITE_MASTER_PASSWORD=your-password
 ```
 
-`VITE_ROOM_ID` is the shared private room. It can also be changed in the Export/Sync section inside the app. Users are placed into this room automatically after entering their local name. The app pushes local changes and refreshes group scores in the background; the visible refresh button is only a manual fallback.
+`VITE_ROOM_ID` is the shared private room. Users are placed into this room automatically after entering their local name. The app pushes local changes and refreshes group scores in the background.
 
 ## Public WebSocket Chat
 
@@ -63,10 +63,10 @@ The chat server keeps the latest messages in memory. It is intentionally small a
 ## Data
 
 - Storage-Key: `eurovision-jury-2026:v1`
-- Schema-Version: `2`
+- Schema-Version: `4`
 - Users, categories, notes, category scores, and jury points stay local in the browser and are merged per room when sync is active.
-- `Export` can generate a WhatsApp-ready text summary or JSON.
-- JSON can be imported again to move a scorecard to another device.
+- The Jury tab can share a WhatsApp-ready text summary via the native share sheet or clipboard fallback.
+- Saved local users can be switched or deleted from the user switch screen.
 
 ## Features
 

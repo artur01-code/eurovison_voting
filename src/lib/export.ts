@@ -39,7 +39,9 @@ export const exportWhatsAppText = (
 
   for (const { point, participant } of topTen) {
     const entry = participant
-      ? `${participant.country} - ${participant.artist} - ${participant.song}`
+      ? `${participant.country} - ${participant.artist} - ${participant.song}${
+          participant.status === 'eliminated' ? ` (${copy.common.eliminated})` : ''
+        }`
       : copy.exportText.open;
     lines.push(copy.exportText.points(point, entry));
   }
@@ -47,7 +49,11 @@ export const exportWhatsAppText = (
   const notes = participants
     .map((participant) => {
       const note = user.ratings[participant.id]?.notes.trim();
-      return note ? `${participant.country}: ${note}` : null;
+      const label =
+        participant.status === 'eliminated'
+          ? `${participant.country} (${copy.common.eliminated})`
+          : participant.country;
+      return note ? `${label}: ${note}` : null;
     })
     .filter((line): line is string => Boolean(line));
 

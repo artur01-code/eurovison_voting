@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { participants } from './data/participants';
+import { allKnownParticipants, participants } from './data/participants';
 import {
   DEFAULT_MASTER_PASSWORD,
   JURY_POINTS,
@@ -8,8 +8,6 @@ import {
   assignJuryPoints,
   calculateAverageScore,
   calculateTotalScore,
-  clearState,
-  createInitialState,
   deleteCategory,
   ensureUser,
   getFinalTopTen,
@@ -24,15 +22,17 @@ import {
   updateActiveUser,
   validateJuryPoints
 } from './lib/appState';
-import { exportUserJson, exportWhatsAppText, importUserJson } from './lib/export';
+import { exportWhatsAppText } from './lib/export';
 import { getGroupJuryScores, getGroupRatingScores, getUserFavorites } from './lib/groupScore';
-import { fetchRoom, pushUserToRoom } from './lib/sync';
+import { deleteUserFromRoom, fetchRoom, pushUserToRoom } from './lib/sync';
 import { getChatWebSocketUrl, isChatMessage, mergeChatMessages, normalizeChatText } from './lib/chat';
 import { getCopy, type Copy } from './lib/i18n';
 import type {
   AppState,
   ChatConnectionStatus,
   ChatMessage,
+  ChatOnlineUser,
+  JuryPoint,
   Language,
   Participant,
   ParticipantFilter,
@@ -40,22 +40,26 @@ import type {
   UserSession
 } from './types';
 
-type View = 'home' | 'categories' | 'jury' | 'export' | 'scoreboard';
+type View = 'home' | 'categories' | 'jury' | 'scoreboard';
+type FinalTab = 'favorites' | 'jury' | 'categories' | 'personal';
 
 const viewIcons: Record<View, string> = {
   home: '♪',
   categories: '★',
   jury: '12',
-  export: '↥',
   scoreboard: '♥'
 };
+
+const formatParticipantLine = (participant: Participant, copy: Copy) =>
+  `${participant.country} - ${participant.song}${
+    participant.status === 'eliminated' ? ` (${copy.common.eliminated})` : ''
+  }`;
 
 function App() {
   const [state, setState] = useState<AppState>(() => loadState());
   const [view, setView] = useState<View>('home');
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState('');
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const copy = useMemo(() => getCopy(state.language), [state.language]);
 
   useEffect(() => {
@@ -64,7 +68,6 @@ function App() {
 
   useEffect(() => {
     document.documentElement.lang = state.language;
-    setSyncMessage('');
   }, [state.language]);
 
   const user = activeUser(state);
@@ -80,26 +83,26 @@ function App() {
       }
 
       const currentUser = user;
-      setIsSyncing(true);
-      setSyncMessage(mode === 'pull' ? copy.sync.refreshingScores : copy.sync.autoSyncing);
-
       try {
         const room =
           mode === 'push-pull' && currentUser
             ? await pushUserToRoom(state.roomId, currentUser)
             : await fetchRoom(state.roomId);
 
-        setState((current) => ({
-          ...current,
-          users: mergeUsersByUpdatedAt(current.users, room.users),
-          lastSyncedAt: new Date().toISOString()
-        }));
-        setSyncMessage(copy.sync.usersInRoom(Object.keys(room.users).length));
+        setState((current) => {
+          const users = mergeUsersByUpdatedAt(current.users, room.users);
+          for (const userId of Object.keys(current.deletedUserIds ?? {})) {
+            delete users[userId];
+          }
+
+          return {
+            ...current,
+            users,
+            lastSyncedAt: new Date().toISOString()
+          };
+        });
       } catch (error) {
-        const message = error instanceof Error ? error.message : copy.sync.failed;
-        setSyncMessage(message);
-      } finally {
-        setIsSyncing(false);
+        console.warn(error instanceof Error ? error.message : copy.sync.failed);
       }
     },
     [copy, state.activeUserId, state.isUnlocked, state.roomId, user]
@@ -129,8 +132,29 @@ function App() {
     return () => window.clearInterval(interval);
   }, [state.activeUserId, state.isUnlocked, syncNow]);
 
+  useEffect(() => {
+    if (view === 'scoreboard') {
+      void syncNow('pull');
+    }
+  }, [view]);
+
   const replaceUser = (update: (user: UserSession) => UserSession) => {
     setState((current) => updateActiveUser(current, update));
+  };
+
+  const navigateToView = useCallback((nextView: View) => {
+    setSelectedParticipantId(null);
+    setView(nextView);
+  }, []);
+
+  const completeOnboarding = () => {
+    setIsOnboardingOpen(false);
+    setState((current) =>
+      updateActiveUser(current, (currentUser) => ({
+        ...currentUser,
+        hasCompletedOnboarding: true
+      }))
+    );
   };
 
   if (!state.isUnlocked) {
@@ -152,6 +176,23 @@ function App() {
         language={state.language}
         onLanguageChange={setLanguage}
         onSelectUser={(name) => setState((current) => ensureUser(current, name))}
+        onDeleteUser={(userId) => {
+          setState((current) => {
+            const { [userId]: _removed, ...users } = current.users;
+            return {
+              ...current,
+              activeUserId: current.activeUserId === userId ? null : current.activeUserId,
+              deletedUserIds: {
+                ...current.deletedUserIds,
+                [userId]: new Date().toISOString()
+              },
+              users
+            };
+          });
+          void deleteUserFromRoom(state.roomId, userId).catch((error) => {
+            console.warn(error instanceof Error ? error.message : copy.sync.failed);
+          });
+        }}
         onLock={() => setState((current) => ({ ...current, isUnlocked: false }))}
       />
     );
@@ -173,10 +214,21 @@ function App() {
           <button
             className="icon-button"
             type="button"
-            title={copy.common.lockApp}
-            onClick={() => setState((current) => ({ ...current, isUnlocked: false }))}
+            title={copy.onboarding.openHelp}
+            onClick={() => setIsOnboardingOpen(true)}
           >
-            ⌕
+            ?
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            title={copy.common.switchUser}
+            onClick={() => {
+              setSelectedParticipantId(null);
+              setState((current) => ({ ...current, activeUserId: null }));
+            }}
+          >
+            ⇄
           </button>
         </div>
       </header>
@@ -205,52 +257,12 @@ function App() {
               />
             )}
             {view === 'categories' && <CategoriesView copy={copy} user={user} onUpdateUser={replaceUser} />}
-            {view === 'jury' && <JuryView copy={copy} user={user} onUpdateUser={replaceUser} />}
-            {view === 'export' && (
-              <ExportView
-                copy={copy}
-                language={state.language}
-                state={state}
-                user={user}
-                syncMessage={syncMessage || copy.sync.autoStart}
-                isSyncing={isSyncing}
-                onSync={() => syncNow('push-pull')}
-                onRoomChange={(roomId) =>
-                  setState((current) => ({
-                    ...current,
-                    roomId,
-                    lastSyncedAt: null
-                  }))
-                }
-                onImport={(importedUser) =>
-                  setState((current) => ({
-                    ...current,
-                    activeUserId: importedUser.id,
-                    users: { ...current.users, [importedUser.id]: importedUser }
-                  }))
-                }
-                onSwitchUser={() => {
-                  setState((current) => ({ ...current, activeUserId: null }));
-                  setView('home');
-                }}
-                onReset={() => {
-                  const confirmed = window.confirm(copy.export.resetConfirm);
-                  if (confirmed) {
-                    clearState();
-                    setState({ ...createInitialState(), isUnlocked: true });
-                    setView('home');
-                  }
-                }}
-              />
-            )}
+            {view === 'jury' && <JuryView copy={copy} language={state.language} user={user} onUpdateUser={replaceUser} />}
             {view === 'scoreboard' && (
               <ScoreboardView
                 user={user}
                 copy={copy}
                 users={Object.values(state.users)}
-                syncMessage={syncMessage || copy.sync.autoStart}
-                isSyncing={isSyncing}
-                onSync={() => syncNow('push-pull')}
               />
             )}
           </>
@@ -259,6 +271,13 @@ function App() {
 
       {!selectedParticipant && <BottomNav copy={copy} currentView={view} onChange={setView} />}
       <ChatWidget copy={copy} user={user} />
+      {(isOnboardingOpen || !user.hasCompletedOnboarding) && (
+        <OnboardingWizard
+          copy={copy}
+          onComplete={completeOnboarding}
+          onNavigate={navigateToView}
+        />
+      )}
     </div>
   );
 }
@@ -342,6 +361,7 @@ function UserGate({
   language,
   onLanguageChange,
   onSelectUser,
+  onDeleteUser,
   onLock
 }: {
   state: AppState;
@@ -349,6 +369,7 @@ function UserGate({
   language: Language;
   onLanguageChange: (language: Language) => void;
   onSelectUser: (name: string) => void;
+  onDeleteUser: (userId: string) => void;
   onLock: () => void;
 }) {
   const [name, setName] = useState('');
@@ -387,9 +408,24 @@ function UserGate({
           <div className="saved-users">
             <p className="muted">{copy.auth.savedUsers}</p>
             {users.map((user) => (
-              <button key={user.id} type="button" onClick={() => onSelectUser(user.name)}>
-                {user.name}
-              </button>
+              <div className="saved-user-row" key={user.id}>
+                <button className="saved-user-select" type="button" onClick={() => onSelectUser(user.name)}>
+                  {user.name}
+                </button>
+                <button
+                  className="saved-user-delete"
+                  type="button"
+                  aria-label={copy.auth.deleteUser(user.name)}
+                  title={copy.auth.deleteUser(user.name)}
+                  onClick={() => {
+                    if (window.confirm(copy.auth.deleteUserConfirm(user.name))) {
+                      onDeleteUser(user.id);
+                    }
+                  }}
+                >
+                  🗑
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -398,6 +434,108 @@ function UserGate({
         </button>
       </section>
     </main>
+  );
+}
+
+function OnboardingWizard({
+  copy,
+  onComplete,
+  onNavigate
+}: {
+  copy: Copy;
+  onComplete: () => void;
+  onNavigate: (view: View) => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const steps = copy.onboarding.steps;
+  const step = steps[stepIndex];
+  const isLastStep = stepIndex === steps.length - 1;
+
+  useEffect(() => {
+    onNavigate(step.view as View);
+
+    const timeout = window.setTimeout(() => {
+      document.querySelectorAll('[data-tour-active="true"]').forEach((element) => {
+        element.removeAttribute('data-tour-active');
+      });
+
+      const target = document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`);
+      if (!target) {
+        return;
+      }
+
+      target.setAttribute('data-tour-active', 'true');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timeout);
+      document.querySelectorAll('[data-tour-active="true"]').forEach((element) => {
+        element.removeAttribute('data-tour-active');
+      });
+    };
+  }, [onNavigate, step.target, step.view]);
+
+  return (
+    <div className="onboarding-overlay" role="dialog" aria-modal="false" aria-labelledby="onboarding-title">
+      <section className="onboarding-card">
+        <div className="onboarding-progress" aria-label={copy.onboarding.stepLabel(stepIndex + 1, steps.length)}>
+          {steps.map((currentStep, index) => (
+            <span key={currentStep.title} className={index <= stepIndex ? 'active' : ''} />
+          ))}
+        </div>
+
+        <p className="eyebrow">{copy.onboarding.stepLabel(stepIndex + 1, steps.length)}</p>
+        <h2 id="onboarding-title">{step.title}</h2>
+        <p className="onboarding-body">{step.body}</p>
+
+        <div className="onboarding-points">
+          {step.points.map((point) => (
+            <div key={point}>
+              <span>✓</span>
+              <p>{point}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="onboarding-actions">
+          <button
+            className="text-button"
+            type="button"
+            disabled={stepIndex === 0}
+            onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+          >
+            {copy.onboarding.back}
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => {
+              if (isLastStep) {
+                onComplete();
+                return;
+              }
+              setStepIndex((current) => current + 1);
+            }}
+          >
+            {isLastStep ? copy.onboarding.finish : copy.onboarding.next}
+          </button>
+        </div>
+
+        <button className="text-button onboarding-skip" type="button" onClick={onComplete}>
+          {copy.onboarding.skip}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function InfoCard({ title, body }: { title: string; body: string }) {
+  return (
+    <aside className="help-card">
+      <strong>{title}</strong>
+      <p>{body}</p>
+    </aside>
   );
 }
 
@@ -411,10 +549,17 @@ function HomeView({
   onOpenParticipant: (participant: Participant) => void;
 }) {
   const [search, setSearch] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [filter, setFilter] = useState<ParticipantFilter>('all');
   const [sort, setSort] = useState<ParticipantSort>('default');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const ratedCount = participants.filter((participant) => isParticipantRated(user, participant.id)).length;
   const progress = Math.round((ratedCount / participants.length) * 100);
+
+  const openSearch = () => {
+    setIsSearchOpen(true);
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  };
 
   const filteredParticipants = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -426,7 +571,6 @@ function HomeView({
           value.toLowerCase().includes(query)
         );
       const isRated = isParticipantRated(user, participant.id);
-      const hasJuryPoints = Object.values(user.juryPoints).includes(participant.id);
 
       if (!matchesSearch) {
         return false;
@@ -436,9 +580,6 @@ function HomeView({
       }
       if (filter === 'unrated') {
         return !isRated;
-      }
-      if (filter === 'jury') {
-        return hasJuryPoints;
       }
       return true;
     });
@@ -467,7 +608,7 @@ function HomeView({
 
   return (
     <section className="screen">
-      <div className="hero-band">
+      <div className="hero-band" data-tour="entries">
         <div>
           <p className="eyebrow">{copy.home.greeting(user.name)}</p>
           <h2>{copy.home.ratedProgress(ratedCount, participants.length)}</h2>
@@ -479,40 +620,70 @@ function HomeView({
       <div className="progress-track">
         <span style={{ width: `${progress}%` }} />
       </div>
+      <InfoCard title={copy.help.entriesTitle} body={copy.help.entriesBody} />
 
       <div className="controls">
-        <input
-          className="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={copy.home.searchPlaceholder}
-        />
-        <div className="segmented">
-          {(['all', 'rated', 'unrated', 'jury'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              className={filter === option ? 'active' : ''}
-              onClick={() => setFilter(option)}
-            >
-              {option === 'all' && copy.home.all}
-              {option === 'rated' && copy.home.rated}
-              {option === 'unrated' && copy.home.unrated}
-              {option === 'jury' && copy.nav.jury}
+        <div className={`search-shell ${isSearchOpen || search ? 'open' : 'compact'}`}>
+          {isSearchOpen || search ? (
+            <>
+              <input
+                ref={searchInputRef}
+                className="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={copy.home.searchPlaceholder}
+              />
+              <button
+                className="search-icon-button"
+                type="button"
+                aria-label={copy.home.closeSearch}
+                onClick={() => {
+                  setSearch('');
+                  setIsSearchOpen(false);
+                }}
+              >
+                ×
+              </button>
+            </>
+          ) : (
+            <button className="search-icon-button" type="button" aria-label={copy.home.searchAction} onClick={openSearch}>
+              ⌕
             </button>
-          ))}
+          )}
         </div>
-        <div className="segmented wide">
-          {(['default', 'favorites'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              className={sort === option ? 'active' : ''}
-              onClick={() => setSort(option)}
-            >
-              {option === 'default' ? copy.home.sortDefault : copy.home.sortFavorites}
-            </button>
-          ))}
+        <div className="filter-tools">
+          <div className="filter-group status-filter">
+            <span>{copy.home.filterLabel}</span>
+            <div className="segmented compact-segmented">
+              {(['all', 'rated', 'unrated'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={filter === option ? 'active' : ''}
+                  onClick={() => setFilter(option)}
+                >
+                  {option === 'all' && copy.home.all}
+                  {option === 'rated' && copy.home.rated}
+                  {option === 'unrated' && copy.home.unrated}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="filter-group sort-filter">
+            <span>{copy.home.sortLabel}</span>
+            <div className="segmented compact-segmented">
+              {(['default', 'favorites'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={sort === option ? 'active' : ''}
+                  onClick={() => setSort(option)}
+                >
+                  {option === 'default' ? copy.home.sortDefault : copy.home.sortFavorites}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -548,17 +719,54 @@ function ParticipantCard({
 
   return (
     <button className="participant-card" type="button" onClick={onClick}>
-      <div>
-        <p className="country">{participant.country}</p>
-        <h3>{participant.song}</h3>
-        <p className="muted">{participant.artist}</p>
-      </div>
-      <div className="card-stats">
-        {juryPoint && <span className="jury-pill">{juryPoint}</span>}
-        <span>{average === null ? copy.common.open : `${average} ${copy.common.averageShort}`}</span>
-        {total !== null && <small>{total} {copy.common.total}</small>}
+      <ParticipantPerformanceImage participant={participant} className="participant-card-image" />
+      <div className="participant-card-content">
+        <div>
+          <p className="country">{participant.country}</p>
+          <h3>{participant.song}</h3>
+          <p className="muted">{participant.artist}</p>
+        </div>
+        <div className="card-stats">
+          {juryPoint && <span className="jury-pill">{juryPoint}</span>}
+          <span>{average === null ? copy.common.open : `${average} ${copy.common.averageShort}`}</span>
+          {total !== null && <small>{total} {copy.common.total}</small>}
+        </div>
       </div>
     </button>
+  );
+}
+
+function ParticipantPerformanceImage({ participant, className }: { participant: Participant; className: string }) {
+  const image = participant.images?.performance;
+
+  if (!image) {
+    return <div className={`${className} participant-image-fallback`} aria-hidden="true">{participant.country.slice(0, 2)}</div>;
+  }
+
+  return (
+    <img
+      className={className}
+      src={image.src}
+      alt={`${participant.artist} performing ${participant.song} for ${participant.country}`}
+      loading="lazy"
+    />
+  );
+}
+
+function ParticipantPortrait({ participant }: { participant: Participant }) {
+  const image = participant.images?.portrait;
+
+  if (!image) {
+    return <span className="participant-avatar fallback" aria-hidden="true">{participant.country.slice(0, 2)}</span>;
+  }
+
+  return (
+    <img
+      className="participant-avatar"
+      src={image.src}
+      alt=""
+      loading="lazy"
+    />
   );
 }
 
@@ -587,10 +795,19 @@ function ParticipantDetail({
         ← {copy.common.back}
       </button>
       <div className="detail-hero">
-        <p className="eyebrow">{participant.country}</p>
-        <h2>{participant.song}</h2>
-        <p>{participant.artist}</p>
+        <ParticipantPerformanceImage participant={participant} className="detail-hero-image" />
+        <div className="detail-hero-content">
+          <p className="eyebrow">{participant.country}</p>
+          <h2>{participant.song}</h2>
+          <p>{participant.artist}</p>
+          {participant.images?.performance && (
+            <a className="photo-credit" href={participant.images.performance.sourceUrl} target="_blank" rel="noreferrer">
+              {participant.images.performance.credit}
+            </a>
+          )}
+        </div>
       </div>
+      <InfoCard title={copy.help.detailTitle} body={copy.help.detailBody} />
 
       <div className="score-summary">
         <div>
@@ -656,9 +873,14 @@ function ParticipantDetail({
         />
       </label>
 
-      <button className="primary-button sticky-action" type="button" onClick={onNext}>
-        {copy.detail.nextEntry}
-      </button>
+      <div className="sticky-actions">
+        <button className="secondary-button" type="button" onClick={onBack}>
+          {copy.detail.backToOverview}
+        </button>
+        <button className="primary-button" type="button" onClick={onNext}>
+          {copy.detail.nextEntry}
+        </button>
+      </div>
     </section>
   );
 }
@@ -692,7 +914,8 @@ function CategoriesView({
         <h2>{copy.categories.title}</h2>
         <p className="muted">{copy.categories.description}</p>
       </div>
-      <form onSubmit={submit} className="inline-form">
+      <InfoCard title={copy.help.categoriesTitle} body={copy.help.categoriesBody} />
+      <form onSubmit={submit} className="inline-form" data-tour="categories">
         <input
           value={newCategory}
           onChange={(event) => setNewCategory(event.target.value)}
@@ -736,17 +959,55 @@ function CategoriesView({
 
 function JuryView({
   copy,
+  language,
   user,
   onUpdateUser
 }: {
   copy: Copy;
+  language: Language;
   user: UserSession;
   onUpdateUser: (update: (user: UserSession) => UserSession) => void;
 }) {
   const validation = validateJuryPoints(user.juryPoints);
-  const selectedIds = new Set(Object.values(user.juryPoints).filter(Boolean));
+  const selectedIds = useMemo(
+    () => new Set(Object.values(user.juryPoints).filter((participantId): participantId is string => Boolean(participantId))),
+    [user.juryPoints]
+  );
   const categorySuggestions = useMemo(() => getCategorySuggestions(user), [user]);
   const [celebrate, setCelebrate] = useState(false);
+  const [activePoint, setActivePoint] = useState<JuryPoint | null>(null);
+  const [shareMessage, setShareMessage] = useState('');
+  const knownParticipantsById = useMemo(
+    () => new Map(allKnownParticipants.map((participant) => [participant.id, participant])),
+    []
+  );
+  const shareScore = async () => {
+    const text = exportWhatsAppText(allKnownParticipants, user, language);
+    const title = copy.exportText.title(user.name);
+
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text });
+        setShareMessage(copy.jury.shared);
+      } else {
+        await navigator.clipboard?.writeText(text);
+        setShareMessage(copy.jury.shareCopied);
+      }
+      window.setTimeout(() => setShareMessage(''), 2500);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      try {
+        await navigator.clipboard?.writeText(text);
+        setShareMessage(copy.jury.shareCopied);
+        window.setTimeout(() => setShareMessage(''), 2500);
+      } catch {
+        setShareMessage('');
+      }
+    }
+  };
 
   return (
     <section className="screen">
@@ -755,53 +1016,156 @@ function JuryView({
           <p className="eyebrow">{copy.jury.title}</p>
           <h2>{validation.isComplete ? copy.jury.complete : copy.jury.missingValues(validation.missingPoints.length)}</h2>
         </div>
-        <span>{validation.isUnique ? copy.jury.unique : copy.jury.duplicate}</span>
+        <div className="jury-status-actions">
+          <button
+            className="jury-share-button"
+            type="button"
+            data-tour="jury-share"
+            aria-label={copy.jury.shareScore}
+            title={copy.jury.shareScore}
+            onClick={() => void shareScore()}
+          >
+            ↗
+          </button>
+          <span>{validation.isUnique ? copy.jury.unique : copy.jury.duplicate}</span>
+        </div>
       </div>
+      {shareMessage && <p className="success compact-message">{shareMessage}</p>}
       {!validation.isComplete && (
         <p className="hint">{copy.jury.missing(validation.missingPoints)}</p>
       )}
+      <InfoCard title={copy.help.juryTitle} body={copy.help.juryBody} />
 
-      <div className="jury-list">
+      <div className="jury-list" data-tour="jury">
         {JURY_POINTS.map((point) => {
           const selected = user.juryPoints[point];
           const suggestion = categorySuggestions.get(point);
+          const selectedParticipant = selected ? knownParticipantsById.get(selected) : null;
 
           return (
-            <label key={point} className="jury-row">
+            <div key={point} className="jury-row">
               <span className="points-badge">{point}</span>
               <div className="jury-choice">
-                <select
-                  value={selected ?? ''}
-                  onChange={(event) => {
-                    const nextParticipantId = event.target.value || null;
-                    onUpdateUser((currentUser) => assignJuryPoints(currentUser, point, nextParticipantId));
-                    if (point === 12 && nextParticipantId) {
-                      setCelebrate(true);
-                      window.setTimeout(() => setCelebrate(false), 900);
-                    }
-                  }}
-                >
-                  <option value="">{copy.jury.selectCountry}</option>
-                  {participants.map((participant) => {
-                    const isTaken = selectedIds.has(participant.id) && selected !== participant.id;
-                    return (
-                      <option key={participant.id} value={participant.id} disabled={isTaken}>
-                        {participant.country} - {participant.artist}
-                      </option>
-                    );
-                  })}
-                </select>
+                <button className="jury-select-button" type="button" onClick={() => setActivePoint(point)}>
+                  {selectedParticipant ? (
+                    <>
+                      <ParticipantPortrait participant={selectedParticipant} />
+                      <span>
+                        <strong>{selectedParticipant.country}</strong>
+                        <small>
+                          {selectedParticipant.artist}
+                          {selectedParticipant.status === 'eliminated' && ` · ${copy.common.eliminated}`}
+                        </small>
+                      </span>
+                    </>
+                  ) : (
+                    <span className="jury-select-placeholder">{copy.jury.selectCountry}</span>
+                  )}
+                </button>
                 {suggestion && (
                   <span className="category-suggestion">
                     {copy.jury.categoryHint(suggestion.participant.country, suggestion.average)}
                   </span>
                 )}
               </div>
-            </label>
+            </div>
           );
         })}
       </div>
+      {activePoint && (
+        <JuryPickerSheet
+          copy={copy}
+          point={activePoint}
+          selectedParticipantId={user.juryPoints[activePoint]}
+          selectedIds={selectedIds}
+          knownParticipantsById={knownParticipantsById}
+          onClose={() => setActivePoint(null)}
+          onSelect={(participantId) => {
+            onUpdateUser((currentUser) => assignJuryPoints(currentUser, activePoint, participantId));
+            if (activePoint === 12 && participantId) {
+              setCelebrate(true);
+              window.setTimeout(() => setCelebrate(false), 900);
+            }
+            setActivePoint(null);
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+function JuryPickerSheet({
+  copy,
+  point,
+  selectedParticipantId,
+  selectedIds,
+  knownParticipantsById,
+  onClose,
+  onSelect
+}: {
+  copy: Copy;
+  point: JuryPoint;
+  selectedParticipantId: string | null;
+  selectedIds: Set<string>;
+  knownParticipantsById: Map<string, Participant>;
+  onClose: () => void;
+  onSelect: (participantId: string | null) => void;
+}) {
+  const selectedParticipant = selectedParticipantId ? knownParticipantsById.get(selectedParticipantId) : null;
+
+  return (
+    <div className="picker-overlay" role="dialog" aria-modal="true" aria-labelledby="jury-picker-title">
+      <section className={`picker-sheet ${selectedParticipant?.status === 'eliminated' ? 'has-legacy' : ''}`}>
+        <header className="picker-header">
+          <div>
+            <p className="eyebrow">{copy.common.points(point)}</p>
+            <h2 id="jury-picker-title">{copy.jury.chooseForPoints(point)}</h2>
+          </div>
+          <button className="icon-button" type="button" title={copy.chat.close} onClick={onClose}>
+            ×
+          </button>
+        </header>
+
+        {selectedParticipant?.status === 'eliminated' && (
+          <button className="picker-option selected legacy" type="button" onClick={() => onSelect(null)}>
+            <ParticipantPortrait participant={selectedParticipant} />
+            <span>
+              <strong>{selectedParticipant.country}</strong>
+              <small>{selectedParticipant.artist} · {copy.common.eliminated}</small>
+            </span>
+            <em>{copy.jury.clearSelection}</em>
+          </button>
+        )}
+
+        <div className="picker-list">
+          {participants.map((participant) => {
+            const isSelected = selectedParticipantId === participant.id;
+            const isTaken = selectedIds.has(participant.id) && !isSelected;
+
+            return (
+              <button
+                key={participant.id}
+                className={`picker-option ${isSelected ? 'selected' : ''}`}
+                type="button"
+                disabled={isTaken}
+                onClick={() => onSelect(participant.id)}
+              >
+                <ParticipantPortrait participant={participant} />
+                <span>
+                  <strong>{participant.country}</strong>
+                  <small>{participant.artist}</small>
+                </span>
+                {isTaken && <em>{copy.jury.alreadyAssigned}</em>}
+              </button>
+            );
+          })}
+        </div>
+
+        <button className="text-button picker-clear" type="button" onClick={() => onSelect(null)}>
+          {copy.jury.clearSelection}
+        </button>
+      </section>
+    </div>
   );
 }
 
@@ -818,131 +1182,17 @@ function getCategorySuggestions(user: UserSession) {
 }
 
 function FinalTopTen({ copy, user }: { copy: Copy; user: UserSession }) {
-  const topTen = getFinalTopTen(participants, user);
+  const topTen = getFinalTopTen(allKnownParticipants, user);
 
   return (
     <section className="final-card">
-      <h2>{copy.jury.personalTopTen}</h2>
+      <InfoCard title={copy.jury.personalTopTen} body={copy.final.personalInfo} />
       {topTen.map(({ point, participant }) => (
         <div key={point} className="topten-row">
           <strong>{point}</strong>
-          <span>{participant ? `${participant.country} - ${participant.song}` : copy.common.stillOpen}</span>
+          <span>{participant ? formatParticipantLine(participant, copy) : copy.common.stillOpen}</span>
         </div>
       ))}
-    </section>
-  );
-}
-
-function ExportView({
-  copy,
-  language,
-  state,
-  user,
-  syncMessage,
-  isSyncing,
-  onSync,
-  onRoomChange,
-  onImport,
-  onSwitchUser,
-  onReset
-}: {
-  copy: Copy;
-  language: Language;
-  state: AppState;
-  user: UserSession;
-  syncMessage: string;
-  isSyncing: boolean;
-  onSync: () => void;
-  onRoomChange: (roomId: string) => void;
-  onImport: (user: UserSession) => void;
-  onSwitchUser: () => void;
-  onReset: () => void;
-}) {
-  const [mode, setMode] = useState<'text' | 'json'>('text');
-  const [importText, setImportText] = useState('');
-  const [message, setMessage] = useState('');
-  const textExport = exportWhatsAppText(participants, user, language);
-  const jsonExport = exportUserJson(state, user);
-  const exportValue = mode === 'text' ? textExport : jsonExport;
-
-  const copyToClipboard = async () => {
-    await navigator.clipboard?.writeText(exportValue);
-    setMessage(copy.export.copied);
-  };
-
-  return (
-    <section className="screen">
-      <div className="section-copy">
-        <h2>{copy.export.title}</h2>
-        <p className="muted">{copy.export.description}</p>
-      </div>
-      <section className="sync-panel">
-        <div>
-          <p className="eyebrow">{copy.sync.autoRoom}</p>
-          <label>
-            {copy.sync.roomId}
-            <input
-              value={state.roomId}
-              onChange={(event) => onRoomChange(event.target.value)}
-              placeholder="eurovision-2026-private"
-            />
-          </label>
-        </div>
-        <div className="sync-actions">
-          <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing || !state.roomId.trim()}>
-            {isSyncing ? copy.common.refreshing : copy.common.refreshNow}
-          </button>
-          <span className="sync-note">{copy.sync.autoRoomNote}</span>
-          <p className="muted">{syncMessage}</p>
-        </div>
-      </section>
-      <div className="segmented wide">
-        <button className={mode === 'text' ? 'active' : ''} type="button" onClick={() => setMode('text')}>
-          Text
-        </button>
-        <button className={mode === 'json' ? 'active' : ''} type="button" onClick={() => setMode('json')}>
-          JSON
-        </button>
-      </div>
-      <textarea className="export-box" readOnly value={exportValue} rows={14} />
-      <button className="primary-button" type="button" onClick={copyToClipboard}>
-        {copy.common.copy}
-      </button>
-      {message && <p className="success">{message}</p>}
-
-      <details className="import-panel">
-        <summary>{copy.export.importSummary}</summary>
-        <textarea
-          value={importText}
-          onChange={(event) => setImportText(event.target.value)}
-          placeholder={copy.export.pasteJson}
-          rows={7}
-        />
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => {
-            try {
-              onImport(importUserJson(importText));
-              setImportText('');
-              setMessage(copy.export.importComplete);
-            } catch {
-              setMessage(copy.export.importFailed);
-            }
-          }}
-        >
-          {copy.common.import}
-        </button>
-      </details>
-
-      <div className="danger-zone">
-        <button type="button" onClick={onSwitchUser}>
-          {copy.export.switchUser}
-        </button>
-        <button type="button" onClick={onReset}>
-          {copy.export.resetAll}
-        </button>
-      </div>
     </section>
   );
 }
@@ -950,102 +1200,111 @@ function ExportView({
 function ScoreboardView({
   user,
   copy,
-  users,
-  syncMessage,
-  isSyncing,
-  onSync
+  users
 }: {
   user: UserSession;
   copy: Copy;
   users: UserSession[];
-  syncMessage: string;
-  isSyncing: boolean;
-  onSync: () => void;
 }) {
-  const groupJuryScores = getGroupJuryScores(participants, users);
-  const groupRatingScores = getGroupRatingScores(participants, users);
-  const favorites = getUserFavorites(participants, users);
-  const winner = groupJuryScores[0] ?? null;
-  const [showCategoryInfo, setShowCategoryInfo] = useState(false);
+  const groupJuryScores = getGroupJuryScores(allKnownParticipants, users);
+  const groupRatingScores = getGroupRatingScores(allKnownParticipants, users);
+  const favorites = getUserFavorites(allKnownParticipants, users);
+  const [activeTab, setActiveTab] = useState<FinalTab>('favorites');
+  const finalTabs: FinalTab[] = ['favorites', 'jury', 'categories', 'personal'];
 
   return (
     <section className="screen party-mode">
-      <section className="winner-card">
-        <p className="eyebrow">{copy.final.usersInGroup(users.length)}</p>
-        <h2>{winner ? winner.participant.country : copy.final.noWinner}</h2>
-        <p>
-          {winner
-            ? copy.final.winnerSummary(winner.points, winner.voters)
-            : copy.final.waitingForRanking}
-        </p>
-        <button className="primary-button" type="button" onClick={onSync} disabled={isSyncing}>
-          {isSyncing ? copy.common.refreshing : copy.common.refreshNow}
-        </button>
-        <p className="muted">{syncMessage}</p>
-      </section>
-
-      <section className="final-card">
-        <h2>{copy.final.groupFavorites}</h2>
-        {favorites.map(({ user: favoriteUser, point, participant }) => (
-          <div key={favoriteUser.id} className="favorite-row">
-            <div>
-              <strong>{favoriteUser.name}</strong>
-              <small>{point ? copy.common.points(point) : copy.common.stillOpen}</small>
-            </div>
-            <span>{participant ? `${participant.country} - ${participant.song}` : copy.final.noJuryScore}</span>
-          </div>
-        ))}
-      </section>
-
-      <section className="final-card">
-        <h2>{copy.final.juryTotalRanking}</h2>
-        {groupJuryScores.length === 0 && <p className="empty">{copy.final.noJuryPoints}</p>}
-        {groupJuryScores.map(({ participant, points, voters, twelvePoints }, index) => (
-          <div key={participant.id} className="scoreboard-row">
-            <span>{index + 1}</span>
-            <div>
-              <strong>{participant.country}</strong>
-              <small>{participant.song}</small>
-            </div>
-            <strong>{points}</strong>
-            <small>{voters} {voters === 1 ? copy.common.rating : copy.common.ratings} · {twelvePoints}×12</small>
-          </div>
-        ))}
-      </section>
-
-      <section className="final-card">
-        <div className="card-title-row">
-          <h2>{copy.final.categoryFavorites}</h2>
+      <div className="final-tabs" role="tablist" aria-label={copy.final.tabsLabel} data-tour="final">
+        {finalTabs.map((tab) => (
           <button
-            className="info-button"
+            key={tab}
             type="button"
-            aria-expanded={showCategoryInfo}
-            aria-label={copy.final.categoryInfoLabel}
-            onClick={() => setShowCategoryInfo((current) => !current)}
+            role="tab"
+            aria-selected={activeTab === tab}
+            className={activeTab === tab ? 'active' : ''}
+            onClick={() => setActiveTab(tab)}
           >
-            i
+            {copy.final.tabs[tab]}
           </button>
-        </div>
-        {showCategoryInfo && (
-          <p className="info-note">
-            {copy.final.categoryInfo}
-          </p>
-        )}
-        {groupRatingScores.length === 0 && <p className="empty">{copy.final.noCategoryScores}</p>}
-        {groupRatingScores.slice(0, 12).map(({ participant, average, voters }, index) => (
-          <div key={participant.id} className="scoreboard-row">
-            <span>{index + 1}</span>
-            <div>
-              <strong>{participant.country}</strong>
-              <small>{participant.song}</small>
-            </div>
-            <strong>{average} {copy.common.averageShort}</strong>
-            <small>{voters} {voters === 1 ? copy.common.rating : copy.common.ratings}</small>
-          </div>
         ))}
-      </section>
+      </div>
 
-      <FinalTopTen copy={copy} user={user} />
+      {activeTab === 'favorites' && (
+        <section className="final-card">
+          <InfoCard title={copy.final.groupFavorites} body={copy.final.groupFavoritesInfo} />
+          {favorites.map(({ user: favoriteUser, point, participant }) => (
+            <div key={favoriteUser.id} className="favorite-row">
+              <div>
+                <strong>{favoriteUser.name}</strong>
+                <small>{point ? copy.common.points(point) : copy.common.stillOpen}</small>
+              </div>
+              <span className="final-entry-line">
+                {participant && <ParticipantPortrait participant={participant} />}
+                <span>{participant ? formatParticipantLine(participant, copy) : copy.final.noJuryScore}</span>
+              </span>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {activeTab === 'jury' && (
+        <section className="final-card">
+          <InfoCard title={copy.final.juryTotalRanking} body={copy.final.juryInfo} />
+          {groupJuryScores.length === 0 && <p className="empty">{copy.final.noJuryPoints}</p>}
+          {groupJuryScores.map(({ participant, points, votes }, index) => (
+            <div key={participant.id} className="scoreboard-row">
+              <span>{index + 1}</span>
+              <div className="scoreboard-entry">
+                <ParticipantPortrait participant={participant} />
+                <span>
+                  <strong>{participant.country}</strong>
+                  <small>
+                    {participant.song}
+                    {participant.status === 'eliminated' && <span className="status-chip">{copy.common.eliminated}</span>}
+                  </small>
+                </span>
+              </div>
+              <strong>{points}</strong>
+              <details className="vote-details">
+                <summary>{copy.final.showVotes(votes.length)}</summary>
+                <div>
+                  {votes.map((vote) => (
+                    <span key={`${participant.id}-${vote.userId}`}>
+                      {vote.userName}: {copy.common.points(vote.points)}
+                    </span>
+                  ))}
+                </div>
+              </details>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {activeTab === 'categories' && (
+        <section className="final-card">
+          <InfoCard title={copy.final.categoryFavorites} body={copy.final.categoryInfo} />
+          {groupRatingScores.length === 0 && <p className="empty">{copy.final.noCategoryScores}</p>}
+          {groupRatingScores.slice(0, 12).map(({ participant, average, voters }, index) => (
+            <div key={participant.id} className="scoreboard-row">
+              <span>{index + 1}</span>
+              <div className="scoreboard-entry">
+                <ParticipantPortrait participant={participant} />
+                <span>
+                  <strong>{participant.country}</strong>
+                  <small>
+                    {participant.song}
+                    {participant.status === 'eliminated' && <span className="status-chip">{copy.common.eliminated}</span>}
+                  </small>
+                </span>
+              </div>
+              <strong>{average} {copy.common.averageShort}</strong>
+              <small>{voters} {voters === 1 ? copy.common.rating : copy.common.ratings}</small>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {activeTab === 'personal' && <FinalTopTen copy={copy} user={user} />}
     </section>
   );
 }
@@ -1079,6 +1338,7 @@ function BottomNav({
 function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<ChatOnlineUser[]>([]);
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<ChatConnectionStatus>('connecting');
   const [unreadCount, setUnreadCount] = useState(0);
@@ -1110,6 +1370,13 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
 
       socket.addEventListener('open', () => {
         setStatus('connected');
+        socket.send(
+          JSON.stringify({
+            type: 'join',
+            authorId: user.id,
+            authorName: user.name
+          })
+        );
       });
 
       socket.addEventListener('message', (event) => {
@@ -1118,6 +1385,7 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
             type?: string;
             messages?: unknown[];
             message?: unknown;
+            users?: unknown[];
           };
 
           if (payload.type === 'history' && Array.isArray(payload.messages)) {
@@ -1131,6 +1399,11 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
             if (!isOpenRef.current && payload.message.authorId !== user.id) {
               setUnreadCount((count) => count + 1);
             }
+            return;
+          }
+
+          if (payload.type === 'presence' && Array.isArray(payload.users)) {
+            setOnlineUsers(payload.users.filter(isChatOnlineUser));
           }
         } catch {
           setStatus('disconnected');
@@ -1160,7 +1433,7 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
       }
       socketRef.current?.close();
     };
-  }, [user.id]);
+  }, [user.id, user.name]);
 
   useEffect(() => {
     if (isOpen) {
@@ -1191,6 +1464,14 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
       : copy.chat.connectingPreview;
   const isBubbleExpanded = Boolean(showBubblePreview && latestMessage && !isOpen);
   const canSend = status === 'connected' && normalizeChatText(draft).length > 0;
+  const statusLabel =
+    status === 'connected'
+      ? copy.chat.connected
+      : status === 'connecting'
+        ? copy.chat.connecting
+        : status === 'disconnected'
+          ? copy.chat.disconnected
+          : copy.chat.unavailable;
 
   const sendMessage = (event: FormEvent) => {
     event.preventDefault();
@@ -1230,20 +1511,29 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
           <section className="chat-modal">
             <header className="chat-header">
               <div>
-                <p className="eyebrow">{copy.chat.automaticallyConnected}</p>
-                <h2 id="chat-title">{copy.chat.roomTitle}</h2>
+                <div className="chat-title-line">
+                  <h2 id="chat-title">{copy.chat.roomTitle}</h2>
+                  <span className={`connection-dot ${status}`} aria-label={statusLabel} title={statusLabel} />
+                </div>
               </div>
               <button className="icon-button" type="button" title={copy.chat.close} onClick={() => setIsOpen(false)}>
                 ×
               </button>
             </header>
 
-            <div className={`chat-status ${status}`}>
-              {status === 'connected' && copy.chat.connected}
-              {status === 'connecting' && copy.chat.connecting}
-              {status === 'disconnected' && copy.chat.disconnected}
-              {status === 'unavailable' && copy.chat.unavailable}
-            </div>
+            <section className="chat-meta">
+              <div className="online-users">
+                <strong>{copy.chat.onlineUsers}</strong>
+                <div>
+                  {onlineUsers.length === 0 && <span>{copy.chat.noOnlineUsers}</span>}
+                  {onlineUsers.map((onlineUser) => (
+                    <span className="online-user-chip" key={onlineUser.id}>
+                      {onlineUser.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </section>
 
             <div className="chat-messages" ref={listRef}>
               {messages.length === 0 && <p className="empty">{copy.chat.empty}</p>}
@@ -1282,6 +1572,15 @@ function ChatWidget({ copy, user }: { copy: Copy; user: UserSession }) {
       )}
     </>
   );
+}
+
+function isChatOnlineUser(value: unknown): value is ChatOnlineUser {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<ChatOnlineUser>;
+  return typeof candidate.id === 'string' && typeof candidate.name === 'string';
 }
 
 export default App;

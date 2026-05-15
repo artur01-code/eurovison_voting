@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { participants } from '../data/participants';
+import { allKnownParticipants, eliminatedParticipants, participants } from '../data/participants';
 import { assignJuryPoints, createUserSession, setCategoryScore } from './appState';
 import { getGroupJuryScores, getGroupRatingScores, getUserFavorites } from './groupScore';
 
@@ -14,6 +14,10 @@ describe('group score aggregation', () => {
 
     expect(scores[0].participant.country).toBe('Italy');
     expect(scores[0].points).toBe(22);
+    expect(scores[0].votes).toEqual([
+      { userId: 'lea', userName: 'Lea', points: 12 },
+      { userId: 'jorit', userName: 'Jorit', points: 10 }
+    ]);
     expect(scores[1].participant.country).toBe('Germany');
     expect(scores[1].points).toBe(20);
   });
@@ -41,5 +45,15 @@ describe('group score aggregation', () => {
 
     expect(favorites[0].point).toBe(12);
     expect(favorites[0].participant?.country).toBe('Germany');
+  });
+
+  it('can still aggregate legacy scores for eliminated entries when they are known', () => {
+    const armenia = eliminatedParticipants.find((participant) => participant.country === 'Armenia')!;
+    const jorit = assignJuryPoints(createUserSession('Jorit'), 12, armenia.id);
+
+    const scores = getGroupJuryScores(allKnownParticipants, [jorit]);
+
+    expect(scores[0].participant.country).toBe('Armenia');
+    expect(scores[0].participant.status).toBe('eliminated');
   });
 });

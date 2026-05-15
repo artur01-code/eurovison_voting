@@ -26,6 +26,18 @@ const server = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
+const getOnlineUsers = () => {
+  const usersById = new Map();
+
+  for (const client of wss.clients) {
+    if (client.user) {
+      usersById.set(client.user.id, client.user);
+    }
+  }
+
+  return Array.from(usersById.values()).sort((a, b) => a.name.localeCompare(b.name));
+};
+
 const sendJson = (socket, payload) => {
   if (socket.readyState === socket.OPEN) {
     socket.send(JSON.stringify(payload));
@@ -38,12 +50,27 @@ const broadcast = (payload) => {
   }
 };
 
+const broadcastPresence = () => {
+  broadcast({ type: 'presence', users: getOnlineUsers() });
+};
+
 wss.on('connection', (socket) => {
+  socket.user = null;
   sendJson(socket, { type: 'history', messages });
+  sendJson(socket, { type: 'presence', users: getOnlineUsers() });
 
   socket.on('message', (raw) => {
     try {
       const payload = JSON.parse(String(raw));
+      if (payload.type === 'join') {
+        socket.user = {
+          id: normalizeId(payload.authorId),
+          name: normalizeName(payload.authorName)
+        };
+        broadcastPresence();
+        return;
+      }
+
       if (payload.type !== 'message') {
         return;
       }
@@ -66,6 +93,11 @@ wss.on('connection', (socket) => {
     } catch {
       sendJson(socket, { type: 'error', error: 'Invalid chat payload.' });
     }
+  });
+
+  socket.on('close', () => {
+    socket.user = null;
+    broadcastPresence();
   });
 });
 

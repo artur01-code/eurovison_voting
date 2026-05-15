@@ -12,7 +12,7 @@ import type {
 import { DEFAULT_LANGUAGE, isLanguage } from './i18n';
 
 export const STORAGE_KEY = 'eurovision-jury-2026:v1';
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 export const JURY_POINTS = [12, 10, 8, 7, 6, 5, 4, 3, 2, 1] as const satisfies readonly JuryPoint[];
 export const DEFAULT_MASTER_PASSWORD = import.meta.env.VITE_MASTER_PASSWORD ?? 'eurovision2026';
 export const DEFAULT_ROOM_ID = import.meta.env.VITE_ROOM_ID ?? 'eurovision-2026-private';
@@ -45,6 +45,7 @@ export const createInitialState = (): AppState => ({
   roomId: DEFAULT_ROOM_ID,
   lastSyncedAt: null,
   language: DEFAULT_LANGUAGE,
+  deletedUserIds: {},
   users: {}
 });
 
@@ -65,6 +66,7 @@ export const createUserSession = (name: string): UserSession => {
   return {
     id: userIdFromName(cleanName),
     name: cleanName,
+    hasCompletedOnboarding: false,
     categories: defaultCategories(),
     ratings: {},
     juryPoints: createEmptyJuryPoints(),
@@ -77,10 +79,12 @@ export const ensureUser = (state: AppState, name: string): AppState => {
   const user = createUserSession(name);
   const existing = state.users[user.id];
   const nextUser = existing ? { ...existing, name: normalizeName(name), updatedAt: now() } : user;
+  const { [nextUser.id]: _restored, ...deletedUserIds } = state.deletedUserIds ?? {};
 
   return {
     ...state,
     activeUserId: nextUser.id,
+    deletedUserIds,
     users: {
       ...state.users,
       [nextUser.id]: nextUser
@@ -340,9 +344,13 @@ export const migrateState = (unknownState: unknown): AppState => {
   }
 
   const candidate = unknownState as Partial<AppState>;
-  if (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2 && candidate.schemaVersion !== SCHEMA_VERSION) {
+  if (![1, 2, 3, SCHEMA_VERSION].includes(candidate.schemaVersion ?? 0)) {
     return createInitialState();
   }
+
+  const users = candidate.users && typeof candidate.users === 'object' ? candidate.users : {};
+  const deletedUserIds =
+    candidate.deletedUserIds && typeof candidate.deletedUserIds === 'object' ? candidate.deletedUserIds : {};
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -351,7 +359,18 @@ export const migrateState = (unknownState: unknown): AppState => {
     roomId: candidate.roomId ?? DEFAULT_ROOM_ID,
     lastSyncedAt: candidate.lastSyncedAt ?? null,
     language: isLanguage(candidate.language) ? candidate.language : DEFAULT_LANGUAGE,
-    users: candidate.users ?? {}
+    deletedUserIds: Object.fromEntries(
+      Object.entries(deletedUserIds).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    ),
+    users: Object.fromEntries(
+      Object.entries(users).map(([userId, user]) => [
+        userId,
+        {
+          ...user,
+          hasCompletedOnboarding: Boolean(user.hasCompletedOnboarding)
+        }
+      ])
+    )
   };
 };
 

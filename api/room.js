@@ -137,7 +137,28 @@ export default async function handler(req, res) {
       return json(res, 200, { room });
     }
 
-    res.setHeader('Allow', 'GET, POST');
+    if (req.method === 'DELETE') {
+      const body = await readBody(req);
+      const roomId = normalizeRoomId(body.roomId);
+      const userId = String(body.userId ?? '').trim();
+      if (!roomId) {
+        return json(res, 400, { error: 'roomId is missing.' });
+      }
+      if (!userId) {
+        return json(res, 400, { error: 'userId is missing.' });
+      }
+
+      const room = await loadRoom(roomId);
+      if (room.users[userId]) {
+        delete room.users[userId];
+        room.updatedAt = new Date().toISOString();
+        await saveRoom(room);
+      }
+
+      return json(res, 200, { room });
+    }
+
+    res.setHeader('Allow', 'GET, POST, DELETE');
     return json(res, 405, { error: 'Method not allowed.' });
   } catch (error) {
     return json(res, error.status ?? 500, { error: error.message ?? 'Serverless sync failed.' });

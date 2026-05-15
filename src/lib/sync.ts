@@ -42,3 +42,15 @@ export const pushUserToRoom = async (roomId: string, user: UserSession): Promise
 
   return (await parseResponse(response)).room;
 };
+
+export const deleteUserFromRoom = async (roomId: string, userId: string): Promise<SyncRoomState> => {
+  const response = await fetch('/api/room', {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ roomId, userId })
+  });
+
+  return (await parseResponse(response)).room;
+};

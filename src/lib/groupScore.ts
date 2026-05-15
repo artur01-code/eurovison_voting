@@ -6,6 +6,11 @@ export interface GroupJuryScore {
   points: number;
   voters: number;
   twelvePoints: number;
+  votes: Array<{
+    userId: string;
+    userName: string;
+    points: number;
+  }>;
 }
 
 export interface GroupRatingScore {
@@ -25,7 +30,15 @@ export const getGroupJuryScores = (
   users: UserSession[]
 ): GroupJuryScore[] => {
   const byId = new Map(participants.map((participant) => [participant.id, participant]));
-  const scores = new Map<string, { points: number; voters: Set<string>; twelvePoints: number }>();
+  const scores = new Map<
+    string,
+    {
+      points: number;
+      voters: Set<string>;
+      twelvePoints: number;
+      votes: Array<{ userId: string; userName: string; points: number }>;
+    }
+  >();
 
   for (const user of users) {
     for (const point of JURY_POINTS) {
@@ -34,9 +47,10 @@ export const getGroupJuryScores = (
         continue;
       }
 
-      const current = scores.get(participantId) ?? { points: 0, voters: new Set<string>(), twelvePoints: 0 };
+      const current = scores.get(participantId) ?? { points: 0, voters: new Set<string>(), twelvePoints: 0, votes: [] };
       current.points += point;
       current.voters.add(user.id);
+      current.votes.push({ userId: user.id, userName: user.name, points: point });
       if (point === 12) {
         current.twelvePoints += 1;
       }
@@ -49,7 +63,8 @@ export const getGroupJuryScores = (
       participant: byId.get(participantId)!,
       points: score.points,
       voters: score.voters.size,
-      twelvePoints: score.twelvePoints
+      twelvePoints: score.twelvePoints,
+      votes: score.votes.sort((a, b) => b.points - a.points || a.userName.localeCompare(b.userName))
     }))
     .sort((a, b) => b.points - a.points || b.twelvePoints - a.twelvePoints || a.participant.country.localeCompare(b.participant.country));
 };
@@ -93,4 +108,3 @@ export const getUserFavorites = (participants: Participant[], users: UserSession
     })
     .sort((a, b) => a.user.name.localeCompare(b.user.name));
 };
-

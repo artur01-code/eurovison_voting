@@ -1,11 +1,23 @@
 export type JuryPoint = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 10 | 12;
 export type Language = 'en' | 'de';
 
+export interface ParticipantImage {
+  src: string;
+  credit: string;
+  sourceUrl: string;
+  assetId: number;
+}
+
 export interface Participant {
   id: string;
   country: string;
   artist: string;
   song: string;
+  status: 'finalist' | 'eliminated';
+  images?: {
+    performance?: ParticipantImage;
+    portrait?: ParticipantImage;
+  };
 }
 
 export interface RatingCategory {
@@ -27,6 +39,7 @@ export type JuryPointsAssignment = Record<JuryPoint, string | null>;
 export interface UserSession {
   id: string;
   name: string;
+  hasCompletedOnboarding: boolean;
   categories: RatingCategory[];
   ratings: Record<string, ParticipantRating>;
   juryPoints: JuryPointsAssignment;
@@ -41,10 +54,11 @@ export interface AppState {
   roomId: string;
   lastSyncedAt: string | null;
   language: Language;
+  deletedUserIds: Record<string, string>;
   users: Record<string, UserSession>;
 }
 
-export type ParticipantFilter = 'all' | 'rated' | 'unrated' | 'jury';
+export type ParticipantFilter = 'all' | 'rated' | 'unrated';
 export type ParticipantSort = 'default' | 'favorites';
 
 export interface SyncRoomState {
@@ -64,6 +78,11 @@ export interface ChatMessage {
   authorName: string;
   text: string;
   createdAt: string;
+}
+
+export interface ChatOnlineUser {
+  id: string;
+  name: string;
 }
 
 export type ChatConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'unavailable';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { participants } from '../data/participants';
+import { allKnownParticipants, eliminatedParticipants, participants } from '../data/participants';
 import { assignJuryPoints, createInitialState, createUserSession } from './appState';
 import { exportUserJson, exportWhatsAppText, importUserJson } from './export';
 
@@ -15,6 +15,15 @@ describe('exports', () => {
     expect(lines[0]).toBe("Jorit's Eurovision Jury 2026:");
     expect(lines[1]).toBe('12 points: Germany - Sarah Engels - Fire');
     expect(lines[2]).toBe('10 points: Italy - Sal Da Vinci - Per Sempre Sì');
+  });
+
+  it('keeps eliminated legacy jury picks readable in exports', () => {
+    const armenia = eliminatedParticipants.find((participant) => participant.country === 'Armenia')!;
+    const user = assignJuryPoints(createUserSession('Jorit'), 12, armenia.id);
+
+    const text = exportWhatsAppText(allKnownParticipants, user);
+
+    expect(text).toContain('12 points: Armenia - SIMÓN - Paloma Rumba (eliminated)');
   });
 
   it('imports the JSON export as a user session', () => {
