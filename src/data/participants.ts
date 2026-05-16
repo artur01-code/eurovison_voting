@@ -2,36 +2,32 @@ import type { Participant } from '../types';
 import { participantImages } from './participantImages';
 
 export const FINALISTS_2026 = [
-  // Automatically qualified
-  { country: 'Austria', artist: 'COSMÓ', song: 'Tanzschein' },
-  { country: 'France', artist: 'Monroe', song: 'Regarde !' },
-  { country: 'Germany', artist: 'Sarah Engels', song: 'Fire' },
-  { country: 'Italy', artist: 'Sal Da Vinci', song: 'Per Sempre Sì' },
-  { country: 'United Kingdom', artist: 'LOOK MUM NO COMPUTER', song: 'Eins, Zwei, Drei' },
-
-  // Semi-Final 1 qualifiers
-  { country: 'Belgium', artist: 'ESSYLA', song: 'Dancing on the Ice' },
-  { country: 'Croatia', artist: 'LELEK', song: 'Andromeda' },
-  { country: 'Finland', artist: 'Linda Lampenius x Pete Parkkonen', song: 'Liekinheitin' },
-  { country: 'Greece', artist: 'Akylas', song: 'Ferto' },
-  { country: 'Israel', artist: 'Noam Bettan', song: 'Michelle' },
-  { country: 'Lithuania', artist: 'Lion Ceccah', song: 'Sólo Quiero Más' },
-  { country: 'Moldova', artist: 'Satoshi', song: 'Viva, Moldova!' },
-  { country: 'Poland', artist: 'ALICJA', song: 'Pray' },
-  { country: 'Serbia', artist: 'LAVINA', song: 'Kraj Mene' },
-  { country: 'Sweden', artist: 'FELICIA', song: 'My System' },
-
-  // Semi-Final 2 qualifiers
-  { country: 'Albania', artist: 'Alis', song: 'Nân' },
-  { country: 'Australia', artist: 'Delta Goodrem', song: 'Eclipse' },
-  { country: 'Bulgaria', artist: 'DARA', song: 'Bangaranga' },
-  { country: 'Cyprus', artist: 'Antigoni', song: 'JALLA' },
-  { country: 'Czechia', artist: 'Daniel Zizka', song: 'CROSSROADS' },
-  { country: 'Denmark', artist: 'Søren Torpegaard Lund', song: 'Før Vi Går Hjem' },
-  { country: 'Malta', artist: 'AIDAN', song: 'Bella' },
-  { country: 'Norway', artist: 'JONAS LOVV', song: 'YA YA YA' },
-  { country: 'Romania', artist: 'Alexandra Căpitănescu', song: 'Choke Me' },
-  { country: 'Ukraine', artist: 'LELÉKA', song: 'Ridnym' }
+  // Grand Final running order, Eurovision.com, 15 May 2026.
+  { runningOrder: 1, country: 'Denmark', artist: 'Søren Torpegaard Lund', song: 'Før Vi Går Hjem' },
+  { runningOrder: 2, country: 'Germany', artist: 'Sarah Engels', song: 'Fire' },
+  { runningOrder: 3, country: 'Israel', artist: 'Noam Bettan', song: 'Michelle' },
+  { runningOrder: 4, country: 'Belgium', artist: 'ESSYLA', song: 'Dancing on the Ice' },
+  { runningOrder: 5, country: 'Albania', artist: 'Alis', song: 'Nân' },
+  { runningOrder: 6, country: 'Greece', artist: 'Akylas', song: 'Ferto' },
+  { runningOrder: 7, country: 'Ukraine', artist: 'LELÉKA', song: 'Ridnym' },
+  { runningOrder: 8, country: 'Australia', artist: 'Delta Goodrem', song: 'Eclipse' },
+  { runningOrder: 9, country: 'Serbia', artist: 'LAVINA', song: 'Kraj Mene' },
+  { runningOrder: 10, country: 'Malta', artist: 'AIDAN', song: 'Bella' },
+  { runningOrder: 11, country: 'Czechia', artist: 'Daniel Zizka', song: 'CROSSROADS' },
+  { runningOrder: 12, country: 'Bulgaria', artist: 'DARA', song: 'Bangaranga' },
+  { runningOrder: 13, country: 'Croatia', artist: 'LELEK', song: 'Andromeda' },
+  { runningOrder: 14, country: 'United Kingdom', artist: 'LOOK MUM NO COMPUTER', song: 'Eins, Zwei, Drei' },
+  { runningOrder: 15, country: 'France', artist: 'Monroe', song: 'Regarde !' },
+  { runningOrder: 16, country: 'Moldova', artist: 'Satoshi', song: 'Viva, Moldova!' },
+  { runningOrder: 17, country: 'Finland', artist: 'Linda Lampenius x Pete Parkkonen', song: 'Liekinheitin' },
+  { runningOrder: 18, country: 'Poland', artist: 'ALICJA', song: 'Pray' },
+  { runningOrder: 19, country: 'Lithuania', artist: 'Lion Ceccah', song: 'Sólo Quiero Más' },
+  { runningOrder: 20, country: 'Sweden', artist: 'FELICIA', song: 'My System' },
+  { runningOrder: 21, country: 'Cyprus', artist: 'Antigoni', song: 'JALLA' },
+  { runningOrder: 22, country: 'Italy', artist: 'Sal Da Vinci', song: 'Per Sempre Sì' },
+  { runningOrder: 23, country: 'Norway', artist: 'JONAS LOVV', song: 'YA YA YA' },
+  { runningOrder: 24, country: 'Romania', artist: 'Alexandra Căpitănescu', song: 'Choke Me' },
+  { runningOrder: 25, country: 'Austria', artist: 'COSMÓ', song: 'Tanzschein' }
 ] as const;
 
 const ELIMINATED_2026 = [

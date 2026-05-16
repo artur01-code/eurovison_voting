@@ -727,6 +727,9 @@ function ParticipantCard({
           <p className="muted">{participant.artist}</p>
         </div>
         <div className="card-stats">
+          {participant.runningOrder && (
+            <span className="running-order-pill">#{String(participant.runningOrder).padStart(2, '0')}</span>
+          )}
           {juryPoint && <span className="jury-pill">{juryPoint}</span>}
           <span>{average === null ? copy.common.open : `${average} ${copy.common.averageShort}`}</span>
           {total !== null && <small>{total} {copy.common.total}</small>}

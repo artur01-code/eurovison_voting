@@ -692,6 +692,7 @@ select:focus {
 }
 
 .jury-pill,
+.running-order-pill,
 .points-badge {
   display: grid;
   width: 42px;
@@ -701,6 +702,11 @@ select:focus {
   background: var(--yellow);
   border-radius: 999px;
   font-weight: 950;
+}
+
+.running-order-pill {
+  color: #07161f;
+  background: var(--cyan);
 }
 
 .detail-screen {

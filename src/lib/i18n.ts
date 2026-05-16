@@ -57,7 +57,7 @@ export const translations = {
       sortLabel: 'Sort',
       searchAction: 'Search',
       closeSearch: 'Close search',
-      sortDefault: 'Default',
+      sortDefault: 'Running order',
       sortFavorites: 'Favorites'
     },
     help: {
@@ -304,7 +304,7 @@ export const translations = {
       sortLabel: 'Sortieren',
       searchAction: 'Suchen',
       closeSearch: 'Suche schließen',
-      sortDefault: 'Standard',
+      sortDefault: 'Startreihenfolge',
       sortFavorites: 'Favoriten'
     },
     help: {

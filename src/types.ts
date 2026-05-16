@@ -13,6 +13,7 @@ export interface Participant {
   country: string;
   artist: string;
   song: string;
+  runningOrder?: number;
   status: 'finalist' | 'eliminated';
   images?: {
     performance?: ParticipantImage;
